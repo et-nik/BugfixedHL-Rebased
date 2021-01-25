@@ -389,6 +389,8 @@ extern void EXPORT AddMultiDamage(entvars_t *pevInflictor, CBaseEntity *pEntity,
 
 extern void EXPORT UTIL_PrecacheOtherWeapon(const char *szClassname);
 
+extern void EXPORT W_Precache(void);
+
 extern void DecalGunshot(TraceResult *pTrace, int iBulletType);
 extern void SpawnBlood(Vector vecSpot, int bloodColor, float flDamage);
 extern int DamageDecal(CBaseEntity *pEntity, int bitsDamageType);
