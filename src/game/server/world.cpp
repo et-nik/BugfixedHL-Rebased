@@ -42,7 +42,7 @@ DLL_GLOBAL edict_t *g_pBodyQueueHead;
 CGlobalState gGlobalState;
 extern DLL_GLOBAL int gDisplayTitle;
 
-extern void W_Precache(void);
+extern void EXPORT W_Precache(void);
 
 //
 // This must match the list in util.h
