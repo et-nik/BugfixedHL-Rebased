@@ -2853,16 +2853,34 @@ edict_t *EntSelectSpawnPoint(CBasePlayer *pPlayer)
 		if (FNullEnt(pSpot)) // skip over the null point
 			pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
 
-		if (g_pGameRules->IsTeamplay() && mp_teamspawn.GetBool())
+		CBaseEntity *pFirstSpot = pSpot;
+
+		if (mp_teamspawn.GetBool())
 		{
 			// try to find team spawn
-			CBaseEntity *pFirstSpot = pSpot;
+			int team = pPlayer->pev->team;
+
+			if (g_pGameRules->IsTeamplay()) {
+				team = g_pGameRules->GetTeamIndex(pPlayer->TeamID());
+			}
+
+			// define pFistSpot with team
+			do
+			{
+				if (pSpot && team == pSpot->pev->team)
+				{
+					pFirstSpot = pSpot;
+					break;
+				}
+
+				pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
+			} while (pSpot != pFirstSpot);
 
 			do
 			{
 				if (pSpot)
 				{
-					if (g_pGameRules->GetTeamIndex(pPlayer->TeamID()) != pSpot->pev->team)
+					if (team != pSpot->pev->team)
 					{
 						pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
 						continue;
@@ -2877,8 +2895,6 @@ edict_t *EntSelectSpawnPoint(CBasePlayer *pPlayer)
 				pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
 			} while (pSpot != pFirstSpot);
 		}
-
-		CBaseEntity *pFirstSpot = pSpot;
 
 		do
 		{
