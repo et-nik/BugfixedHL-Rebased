@@ -20,7 +20,9 @@
 
 #include <cstring>
 #include <cstdio>
+#include <FileSystem.h>
 #include <vgui/IScheme.h>
+#include <vgui/ISurface.h>
 #include <vgui_controls/AnimationController.h>
 #include <vgui_controls/Controls.h>
 
@@ -42,6 +44,9 @@
 #include "bhlcfg.h"
 #include "results.h"
 #include "svc_messages.h"
+#include "sdl_rt.h"
+#include "fog.h"
+#include "engine_builds.h"
 
 #if USE_UPDATER
 #include "updater/update_checker.h"
@@ -87,6 +92,35 @@
 #include "hud/ag/ag_timeout.h"
 #include "hud/ag/ag_vote.h"
 
+struct HudScaleInfo
+{
+	//! The sprite resolution.
+	int iRes = 0;
+
+	//! The minimum height for this scale to be selected automatically.
+	int iHeight = 0;
+
+	//! Enum value.
+	EHudScale nScale = EHudScale::Auto;
+
+	//! The file to test for support.
+	const char *szTestFile = nullptr;
+
+	//! @returns Whether this scale is supported by the given max scale.
+	bool IsSupported(EHudScale maxScale) const
+	{
+		return nScale <= maxScale;
+	}
+};
+
+//! The list of allowed HUD sizes.
+static constexpr HudScaleInfo HUD_SCALE_INFO[] = {
+	HudScaleInfo { 320,  240,  EHudScale::X05, "sprites/320hud1.spr" },
+	HudScaleInfo { 640,  480,  EHudScale::X1,  "sprites/640hud1.spr" },
+	HudScaleInfo { 1280, 960,  EHudScale::X2,  "sprites/1280/hud_bucket0.spr" },
+	HudScaleInfo { 2560, 1920, EHudScale::X4,  "sprites/2560/hud_bucket0.spr" },
+};
+
 extern cvar_t *cl_lw;
 
 ConVar cl_bhopcap("cl_bhopcap", "2", FCVAR_BHL_ARCHIVE, "Enables/disables bhop speed cap, '2' - detect automatically");
@@ -96,9 +130,10 @@ ConVar hud_color2("hud_color2", "255 160 0", FCVAR_BHL_ARCHIVE, "HUD color when 
 ConVar hud_color3("hud_color3", "255 96 0", FCVAR_BHL_ARCHIVE, "HUD color when (25%; 50%)");
 ConVar hud_draw("hud_draw", "1", FCVAR_ARCHIVE, "Opacity of the HUD");
 ConVar hud_dim("hud_dim", "1", FCVAR_BHL_ARCHIVE, "Dim inactive HUD elements");
+ConVar hud_scale("hud_scale", "0", FCVAR_BHL_ARCHIVE, "HUD Scale: Auto, 50%, 100%, 200%, 400% (restart required)");
 ConVar hud_capturemouse("hud_capturemouse", "1", FCVAR_ARCHIVE);
 ConVar hud_classautokill("hud_classautokill", "1", FCVAR_ARCHIVE | FCVAR_USERINFO, "Whether or not to suicide immediately on TF class switch");
-ConVar cl_autowepswitch("cl_autowepswitch", "1", FCVAR_BHL_ARCHIVE | FCVAR_USERINFO, "Controls autoswitching to best weapon on pickup\n  0 - never, 1 - always, 2 - unless firing");
+ConVar cl_autowepswitch("cl_autowepswitch", "1", FCVAR_ARCHIVE | FCVAR_BHL_ARCHIVE | FCVAR_USERINFO, "Controls autoswitching to best weapon on pickup\n  0 - never, 1 - always, 2 - unless firing");
 ConVar cl_righthand("cl_righthand", "0", FCVAR_BHL_ARCHIVE, "If enabled, activates the left-handed mode");
 ConVar cl_viewmodel_fov("cl_viewmodel_fov", "0", FCVAR_BHL_ARCHIVE, "Sets the field-of-view for the viewmodel");
 ConVar showtriggers("showtriggers", "0", 0, "Shows trigger brushes");
@@ -107,7 +142,7 @@ ConVar aghl_version("aghl_version", APP_VERSION, 0, "BugfixedHL version");
 ConVar aghl_supports("aghl_supports", "0", 0, "Bitfield of features supported by this client");
 ConVar cl_enable_html_motd("cl_enable_html_motd", "1", FCVAR_BHL_ARCHIVE, "Enables/disables support for HTML MOTDs");
 
-ConVar zoom_sensitivity_ratio("zoom_sensitivity_ratio", "1.2", 0);
+ConVar zoom_sensitivity_ratio("zoom_sensitivity_ratio", "1.2", FCVAR_ARCHIVE | FCVAR_BHL_ARCHIVE);
 
 static Color s_DefaultColorCodeColors[10] = {
 	Color(0xFF, 0xAA, 0x00, 0xFF), // ^0 orange/reset
@@ -125,17 +160,11 @@ static Color s_DefaultColorCodeColors[10] = {
 const Color NoTeamColor::Orange = Color(255, 178, 0, 255);
 const Color NoTeamColor::White = Color(216, 216, 216, 255);
 
-CON_COMMAND(bhop_reset, "Resets BHop auto-detection if it was detected incorrectly")
+CON_COMMAND(pm_reset, "Resets player movement settings if they were detected incorrectly")
 {
-	if (gHUD.GetBHopCapState() != BHopCap::Auto)
-	{
-		ConPrintf("BHop auto-detection is disabled, nothing was done.\n");
-	}
-	else
-	{
-		PM_ResetBHopDetection();
-		ConPrintf("BHop auto-detection reset.\n");
-	}
+	PM_ResetBHopDetection();
+	PM_ResetUseSlowDownDetection();
+	ConPrintf("Player movement settings reset.\n");
 }
 
 // inputw32.cpp
@@ -170,6 +199,62 @@ static void AboutCommand(void)
 	ConPrintf("Discussion forum: " BHL_FORUM_URL "\n");
 }
 
+//! Gets the current HUD size (either user-selected or auto-detected).
+//! @returns iRes.
+static int GetHudSize(const SCREENINFO &screenInfo, EHudScale maxScale)
+{
+	EHudScale userScale = hud_scale.GetEnumClamped<EHudScale>();
+
+	if (userScale != EHudScale::Auto)
+	{
+		// Use user override
+		userScale = clamp(userScale, EHudScale::X05, maxScale);
+		const HudScaleInfo &info = *std::find_if(std::begin(HUD_SCALE_INFO), std::end(HUD_SCALE_INFO), [&](const HudScaleInfo &x)
+		    { return x.nScale == userScale; });
+
+		gEngfuncs.Con_DPrintf("HUD Size Override: %dx%d\n", info.iRes, info.iHeight);
+		return info.iRes;
+	}
+
+	// Auto-detect
+	for (auto it = std::rbegin(HUD_SCALE_INFO); it != std::rend(HUD_SCALE_INFO); ++it)
+	{
+		if (!it->IsSupported(maxScale))
+			continue;
+
+		if (screenInfo.iHeight >= it->iHeight)
+		{
+			// Found the largest one.
+			gEngfuncs.Con_DPrintf(
+				"HUD Size Auto-detect: %dx%d for screen %dx%d\n",
+				it->iRes, it->iHeight,
+			    screenInfo.iWidth, screenInfo.iHeight);
+			return it->iRes;
+		}
+	}
+
+	// Too low resolution. Fall back to the smallest one.
+	const HudScaleInfo &fallbackInfo = HUD_SCALE_INFO[0];
+	gEngfuncs.Con_DPrintf(
+	    "HUD Size Auto-detect: fallback %dx%d for too small screen %dx%d\n",
+	    fallbackInfo.iRes, fallbackInfo.iHeight,
+	    screenInfo.iWidth, screenInfo.iHeight);
+	return fallbackInfo.iRes;
+}
+
+static int CountSpritesOfRes(const client_sprite_t* pSpriteList, int nTotalCount, int iRes)
+{
+	int count = 0;
+
+	for (int i = 0; i < nTotalCount; i++)
+	{
+		if (pSpriteList[i].iRes == iRes)
+			count++;
+	}
+
+	return count;
+}
+
 CHud::CHud()
 {
 }
@@ -195,6 +280,8 @@ void CHud::Init(void)
 	m_bIsAg = !strcmp(gEngfuncs.pfnGetGameDirectory(), "ag");
 	PM_SetIsAG(m_bIsAg);
 
+	m_MaxHudScale = DetectMaxHudScale();
+
 	HookHudMessage<&CHud::MsgFunc_Logo>("Logo");
 	HookHudMessage<&CHud::MsgFunc_ResetHUD>("ResetHUD");
 	HookHudMessage<&CHud::MsgFunc_GameMode>("GameMode");
@@ -203,6 +290,7 @@ void CHud::Init(void)
 	HookHudMessage<&CHud::MsgFunc_SetFOV>("SetFOV");
 	HookHudMessage<&CHud::MsgFunc_Concuss>("Concuss");
 	HookHudMessage<&CHud::MsgFunc_Logo>("Logo");
+	HookHudMessage<&CHud::MsgFunc_Fog>("Fog");
 
 	// TFFree CommandMenu
 	HookCommand("+commandmenu", [] {
@@ -325,6 +413,12 @@ void CHud::Init(void)
 #endif
 
 	UpdateSupportsCvar();
+
+	if (GetEngineBuild() >= ENGINE_BUILD_ANNIVERSARY_FIRST)
+	{
+		gEngfuncs.pfnClientCmd("richpresence_gamemode\n"); // reset
+		gEngfuncs.pfnClientCmd("richpresence_update\n");
+	}
 }
 
 void CHud::VidInit(void)
@@ -353,10 +447,9 @@ void CHud::VidInit(void)
 
 	m_hsprLogo = 0;
 
-	if (ScreenWidth < 640)
-		m_iRes = 320;
-	else
-		m_iRes = 640;
+	// Only update the scale once - otherwise sprites break
+	if (m_iRes == -1)
+		m_iRes = GetHudSize(m_scrinfo, GetMaxHudScale());
 
 	// Only load this once
 	if (!m_pSpriteList)
@@ -364,60 +457,28 @@ void CHud::VidInit(void)
 		// we need to load the hud.txt, and all sprites within
 		m_pSpriteList = SPR_GetList("sprites/hud.txt", &m_iSpriteCountAllRes);
 
-		if (m_pSpriteList)
+		if (!m_pSpriteList)
+			HUD_FatalError("Failed to load sprites/hud.txt.\nYour game is corrupted.");
+
+		// count the number of sprites of the appropriate res
+		m_iSpriteCount = CountSpritesOfRes(m_pSpriteList, m_iSpriteCountAllRes, m_iRes);
+
+		if (m_iSpriteCount == 0)
 		{
-			// count the number of sprites of the appropriate res
-			m_iSpriteCount = 0;
-			client_sprite_t *p = m_pSpriteList;
-			int j;
-			for (j = 0; j < m_iSpriteCountAllRes; j++)
-			{
-				if (p->iRes == m_iRes)
-					m_iSpriteCount++;
-				p++;
-			}
-
-			// allocated memory for sprite handle arrays
-			m_rghSprites.resize(m_iSpriteCount);
-			m_rgrcRects.resize(m_iSpriteCount);
-			m_rgszSpriteNames.resize(m_iSpriteCount);
-
-			p = m_pSpriteList;
-			int index = 0;
-			for (j = 0; j < m_iSpriteCountAllRes; j++)
-			{
-				if (p->iRes == m_iRes)
-				{
-					char sz[256];
-					sprintf(sz, "sprites/%s.spr", p->szSprite);
-					m_rghSprites[index] = SPR_Load(sz);
-					m_rgrcRects[index] = p->rc;
-					Q_strncpy(m_rgszSpriteNames[index].name, p->szName, MAX_SPRITE_NAME_LENGTH);
-
-					index++;
-				}
-
-				p++;
-			}
-
-			// Add AG CTF sprites on non-AG clients
-			// AG has them in hud.txt
-			if (!IsAG())
-			{
-				AddSprite(client_sprite_t { "item_flag_team1", "ag_ctf", 0, 640, wrect_t { 120, 160, 0, 40 } });
-				AddSprite(client_sprite_t { "item_flag_team2", "ag_ctf", 0, 640, wrect_t { 120, 160, 0, 40 } });
-				AddSprite(client_sprite_t { "icon_ctf_home", "ag_ctf", 0, 640, wrect_t { 0, 40, 0, 40 } });
-				AddSprite(client_sprite_t { "icon_ctf_stolen", "ag_ctf", 0, 640, wrect_t { 40, 80, 0, 40 } });
-				AddSprite(client_sprite_t { "icon_ctf_lost", "ag_ctf", 0, 640, wrect_t { 80, 120, 0, 40 } });
-				AddSprite(client_sprite_t { "icon_ctf_carry", "ag_ctf", 0, 640, wrect_t { 120, 160, 0, 40 } });
-				AddSprite(client_sprite_t { "icon_ctf_score", "ag_ctf_score", 0, 640, wrect_t { 0, 16, 0, 16 } });
-			}
+			Warning("Found no sprites with resolution of %d. Defaulting to %d.\n", m_iRes, HUD_FALLBACK_RES);
+			m_iRes = HUD_FALLBACK_RES;
+			m_iSpriteCount = CountSpritesOfRes(m_pSpriteList, m_iSpriteCountAllRes, m_iRes);
 		}
-	}
-	else
-	{
-		// we have already have loaded the sprite reference from hud.txt, but
-		// we need to make sure all the sprites have been loaded (we've gone through a transition, or loaded a save game)
+
+		if (m_iSpriteCount == 0)
+			HUD_FatalError("Failed to find sprites with resolution of %d in sprites/hud.txt.\nYour game is corrupted.", m_iRes);
+
+		// allocated memory for sprite handle arrays
+		m_rghSprites.resize(m_iSpriteCount);
+		m_rgrcRects.resize(m_iSpriteCount);
+		m_rgszSpriteNames.resize(m_iSpriteCount);
+		m_rgSpritePaths.resize(m_iSpriteCount);
+
 		client_sprite_t *p = m_pSpriteList;
 		int index = 0;
 		for (int j = 0; j < m_iSpriteCountAllRes; j++)
@@ -427,17 +488,53 @@ void CHud::VidInit(void)
 				char sz[256];
 				sprintf(sz, "sprites/%s.spr", p->szSprite);
 				m_rghSprites[index] = SPR_Load(sz);
+				m_rgrcRects[index] = p->rc;
+				Q_strncpy(m_rgszSpriteNames[index].name, p->szName, MAX_SPRITE_NAME_LENGTH);
+				m_rgSpritePaths[index] = sz;
+
 				index++;
 			}
 
 			p++;
+		}
+
+		// Add AG CTF sprites on non-AG clients
+		// AG has them in hud.txt
+		if (!IsAG())
+		{
+			AddSprite(client_sprite_t { "item_flag_team1", "ag_ctf", 0, 640, wrect_t { 120, 160, 0, 40 } });
+			AddSprite(client_sprite_t { "item_flag_team2", "ag_ctf", 0, 640, wrect_t { 120, 160, 0, 40 } });
+			AddSprite(client_sprite_t { "icon_ctf_home", "ag_ctf", 0, 640, wrect_t { 0, 40, 0, 40 } });
+			AddSprite(client_sprite_t { "icon_ctf_stolen", "ag_ctf", 0, 640, wrect_t { 40, 80, 0, 40 } });
+			AddSprite(client_sprite_t { "icon_ctf_lost", "ag_ctf", 0, 640, wrect_t { 80, 120, 0, 40 } });
+			AddSprite(client_sprite_t { "icon_ctf_carry", "ag_ctf", 0, 640, wrect_t { 120, 160, 0, 40 } });
+			AddSprite(client_sprite_t { "icon_ctf_score", "ag_ctf_score", 0, 640, wrect_t { 0, 16, 0, 16 } });
+		}
+	}
+	else
+	{
+		// we have already have loaded the sprite reference from hud.txt, but
+		// we need to make sure all the sprites have been loaded (we've gone through a transition, or loaded a save game)
+		Assert(m_rghSprites.size() == m_iSpriteCount);
+		Assert(m_rgrcRects.size() == m_iSpriteCount);
+		Assert(m_rgszSpriteNames.size() == m_iSpriteCount);
+		Assert(m_rgSpritePaths.size() == m_iSpriteCount);
+
+		for (int i = 0; i < m_iSpriteCount; i++)
+		{
+			m_rghSprites[i] = SPR_Load(m_rgSpritePaths[i].c_str());
 		}
 	}
 
 	// assumption: number_1, number_2, etc, are all listed and loaded sequentially
 	m_HUD_number_0 = GetSpriteIndex("number_0");
 
+	if (m_HUD_number_0 == -1)
+		HUD_FatalError("Failed to find sprite 'number_0' in the sprite list.\nYour game is corrupted.");
+
 	m_iFontHeight = m_rgrcRects[m_HUD_number_0].bottom - m_rgrcRects[m_HUD_number_0].top;
+
+	gFog.ClearFog();
 
 	for (CHudElem *i : m_HudList)
 		i->VidInit();
@@ -511,9 +608,24 @@ void CHud::SaveEngineVersion()
 {
 	cvar_t *sv_version = sv_version = gEngfuncs.pfnGetCvarPointer("sv_version");
 	if (sv_version)
+	{
 		Q_strncpy(m_szEngineVersion, sv_version->string, sizeof(m_szEngineVersion));
+
+		// Parse build number
+		std::string_view version = m_szEngineVersion;
+		size_t lastComma = version.rfind(',');
+
+		if (lastComma != std::string::npos)
+		{
+			const char *buildStr = m_szEngineVersion + lastComma + 1;
+			m_iEngineBuildNumber = atoi(buildStr);
+		}
+	}
 	else
+	{
 		Q_strncpy(m_szEngineVersion, "< sv_version not found >", sizeof(m_szEngineVersion));
+		m_iEngineBuildNumber = -1;
+	}
 }
 
 bool CHud::IsAG()
@@ -557,11 +669,14 @@ void CHud::AddSprite(const client_sprite_t &p)
 	m_rgszSpriteNames.push_back({});
 	Q_strncpy(m_rgszSpriteNames[m_iSpriteCount].name, p.szName, MAX_SPRITE_NAME_LENGTH);
 
+	m_rgSpritePaths.emplace_back(sz);
+
 	m_iSpriteCount++;
 
 	Assert(m_rghSprites.size() == m_iSpriteCount);
 	Assert(m_rgrcRects.size() == m_iSpriteCount);
 	Assert(m_rgszSpriteNames.size() == m_iSpriteCount);
+	Assert(m_rgSpritePaths.size() == m_iSpriteCount);
 }
 
 float g_lastFOV = 0.0;
@@ -600,9 +715,9 @@ float CHud::GetSensitivity(void)
 	return m_flMouseSensitivity;
 }
 
-BHopCap CHud::GetBHopCapState()
+EBHopCap CHud::GetBHopCapState()
 {
-	return (BHopCap)clamp(cl_bhopcap.GetInt(), (int)BHopCap::Disabled, (int)BHopCap::Auto);
+	return cl_bhopcap.GetEnumClamped<EBHopCap>();
 }
 
 bool CHud::IsHTMLEnabled()
@@ -715,6 +830,34 @@ void CHud::UpdateSupportsCvar()
 	char buf[64];
 	snprintf(buf, sizeof(buf), "aghl_supports %u", static_cast<unsigned int>(supports));
 	gEngfuncs.pfnClientCmd(buf);
+}
+
+EHudScale CHud::DetectMaxHudScale()
+{
+	const HudScaleInfo *pMaxScaleInfo = nullptr;
+
+	for (const HudScaleInfo& i : HUD_SCALE_INFO)
+	{
+		if (g_pFullFileSystem->FileExists(i.szTestFile))
+		{
+			pMaxScaleInfo = &i;
+		}
+		else
+		{
+			// If i is not supported, then i + 1 isn't supported as well.
+			// Limited by the use of "x <= maxScale" check.
+			break;
+		}
+	}
+
+	if (!pMaxScaleInfo)
+	{
+		GetSDL()->ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "BugfixedHL Error", "HUD sprites are missing. Verify game files.");
+		std::abort();
+	}
+
+	gEngfuncs.Con_DPrintf("Maximum HUD scale: %dx%d\n", pMaxScaleInfo->iRes, pMaxScaleInfo->iHeight);
+	return pMaxScaleInfo->nScale;
 }
 
 CON_COMMAND(append, "Puts a command into the end of the command buffer")

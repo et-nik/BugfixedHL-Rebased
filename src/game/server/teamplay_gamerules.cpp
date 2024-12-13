@@ -59,7 +59,7 @@ CHalfLifeTeamplay ::CHalfLifeTeamplay()
 
 	// Copy all of the teams from the teamlist
 	// make a copy because strtok is destructive
-	strcpy(temp, m_szTeamList);
+	UTIL_strcpy(temp, m_szTeamList);
 	// loop through all teams
 	num_teams = 0;
 	pName = strtok(temp, ";");
@@ -92,6 +92,8 @@ extern CVoiceGameMgr g_VoiceGameMgr;
 
 void CHalfLifeTeamplay ::Think(void)
 {
+	CGameRules::Think();
+
 	///// Check game rules /////
 	static int last_frags;
 	static int last_time;
@@ -100,8 +102,6 @@ void CHalfLifeTeamplay ::Think(void)
 	int time_remaining = 0;
 
 	g_VoiceGameMgr.Update(gpGlobals->frametime);
-
-	PM_SetBHopCapEnabled(!bunnyhop.value);
 
 	if (g_fGameOver) // someone else quit the game already
 	{

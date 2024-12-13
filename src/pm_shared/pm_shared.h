@@ -19,19 +19,57 @@
 #ifndef PM_SHARED_H
 #define PM_SHARED_H
 
+enum class EUseSlowDownType
+{
+	//! Old method (before HL25). Used by old servers and AG.
+	//! Player immediately slows down if +use is held down.
+	Old,
+
+	//! New method from HL25.
+	//! Player slowly slows down if +use is held down.
+	New,
+
+#ifdef CLIENT_DLL
+	//! Detect automatically.
+	AutoDetect,
+#endif
+
+#ifdef CLIENT_DLL
+	_Min = Old,
+	_Max = AutoDetect,
+#else
+	_Min = Old,
+	_Max = New,
+#endif
+};
+
 void PM_Init(struct playermove_s *ppmove);
 void PM_Move(struct playermove_s *ppmove, int server);
 char PM_FindTextureType(char *name);
 
 void PM_SetIsAG(int state);
 
+EUseSlowDownType PM_GetUseSlowDownType();
+void PM_SetUseSlowDownType(EUseSlowDownType value);
+
 #ifdef CLIENT_DLL
+enum class EBHopCap
+{
+	Disabled = 0,
+	Enabled = 1,
+	AutoDetect = 2,
+
+	_Min = Disabled,
+	_Max = AutoDetect,
+};
+
 int PM_GetOnGround();
 int PM_GetWaterLevel();
 int PM_GetMoveType();
-int PM_GetBHopCapState();
-void PM_SetBHopCapState(int state);
+EBHopCap PM_GetBHopCapState();
+void PM_SetBHopCapState(EBHopCap state);
 void PM_ResetBHopDetection();
+void PM_ResetUseSlowDownDetection();
 #else
 int PM_GetBHopCapEnabled();
 void PM_SetBHopCapEnabled(int state);

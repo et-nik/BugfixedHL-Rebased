@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
 
+import argparse
 import datetime
 import distutils
 import distutils.dir_util
-import hashlib
-import json
 import os
 import shutil
 import subprocess
 import sys
-import argparse
+import zipfile
+from CreateMetadata import create_metadata
+
+
+# Also needs to be changed in CMakeLists.txt
+DEFAULT_VERSION = [1, 13, 0, 'dev', '']
 
 
 # ---------------------------------------------
 # Platform stuff
 # ---------------------------------------------
-import zipfile
-
-
 def get_platform_type() -> str:
     if sys.platform.startswith('linux'):
         return 'linux'
@@ -40,10 +41,16 @@ class PlatformWindows:
         elif self.script.vs_version == '2019':
             args.extend(['-G', 'Visual Studio 16 2019'])
             args.extend(['-A', 'Win32'])
+        elif self.script.vs_version == '2022':
+            args.extend(['-G', 'Visual Studio 17 2022'])
+            args.extend(['-A', 'Win32'])
 
         args.extend(['-T', self.script.vs_toolset])
 
         return args
+    
+    def get_cmake_build_args(self):
+        return ['--', '/p:VcpkgEnabled=false']
 
     def need_cmake_build_type_var(self):
         return False
@@ -77,9 +84,12 @@ class PlatformLinux:
         if toolchain_file:
             args.extend(['-DCMAKE_TOOLCHAIN_FILE={}cmake/{}'.format(self.script.repo_root, toolchain_file)])
         return args
+    
+    def get_cmake_build_args(self):
+        return []
 
     def need_cmake_build_type_var(self):
-        return False
+        return True
 
     def update_bin_path(self):
         self.script.paths.out_bin = self.script.paths.build + '/'
@@ -118,8 +128,11 @@ class TargetClient:
         files = COMMON_FILES_TO_COPY
         files.append(FileToCopy(self.script.paths.out_bin + 'client' + self.script.platform.get_dll_ext(),
                                 'valve_addon/cl_dlls/client' + self.script.platform.get_dll_ext()))
-        files.append(FileToCopy('gamedir/gfx', 'valve_addon/gfx'))
+        files.append(FileToCopy('gamedir/resource', 'valve_addon/resource'))
+        files.append(FileToCopy('gamedir/sound', 'valve_addon/sound'))
+        files.append(FileToCopy('gamedir/sprites', 'valve_addon/sprites'))
         files.append(FileToCopy('gamedir/ui', 'valve_addon/ui'))
+        files.append(FileToCopy('gamedir/commandmenu_default.txt', 'valve_addon/commandmenu_default.txt'))
 
         if get_platform_type() == 'windows':
             files.append(FileToCopy(self.script.paths.out_bin + 'client.pdb',
@@ -135,7 +148,7 @@ class TargetServer:
         self.script = scr
 
     def get_build_target_names(self):
-        return ['hl', 'test_server']
+        return ['hl', 'test_server', 'bugfixedapi_amxx']
 
     def get_file_list(self):
         files = COMMON_FILES_TO_COPY
@@ -145,6 +158,13 @@ class TargetServer:
         if get_platform_type() == 'windows':
             files.append(FileToCopy(self.script.paths.out_bin + 'hl.pdb',
                                     'valve_addon/dlls/hl.pdb'))
+            files.append(FileToCopy(self.script.paths.out_bin + 'bugfixedapi_amxx.dll',
+                                    'valve_addon/addons/amxmodx/modules/bugfixedapi_amxx.dll'))
+            files.append(FileToCopy(self.script.paths.out_bin + 'bugfixedapi_amxx.pdb',
+                                    'valve_addon/addons/amxmodx/modules/bugfixedapi_amxx.pdb'))
+        elif get_platform_type() == 'linux':
+            files.append(FileToCopy(self.script.paths.out_bin + 'bugfixedapi_amxx_i386.so',
+                                    'valve_addon/addons/amxmodx/modules/bugfixedapi_amxx_i386.so'))
 
         return files
 
@@ -160,12 +180,11 @@ class BuildScript:
         archive_root = ''
         archive_files = ''
 
-    DEFAULT_VERSION = [0, 1, 0, 'dev', '']
     allowed_targets = ['client', 'server']
     allowed_build_types = ['debug', 'release']
 
-    allowed_vs_versions = ['2017', '2019']
-    allowed_vs_toolsets = ['v141', 'v141_xp', 'v142']
+    allowed_vs_versions = ['2017', '2019', '2022']
+    allowed_vs_toolsets = ['v141', 'v141_xp', 'v142', 'v143']
 
     allowed_linux_compilers = ['gcc', 'gcc-8', 'gcc-9']
 
@@ -177,6 +196,7 @@ class BuildScript:
     vs_toolset = ''
     linux_compiler = ''
     release_version = ''
+    release_version_array = []
 
     cmake_binary = ''
     cmake_args = []
@@ -239,17 +259,19 @@ class BuildScript:
                             help='path to cmake binary (PATH used instead)')
         parser.add_argument('--cmake-args', action='store',
                             help='additional CMake arguments')
+        parser.add_argument('--github-actions', dest='ci', action='store_true',
+                            help='build for GitHub Actions')
 
         # Version override
-        parser.add_argument('--v-major', action='store', type=int, default=self.DEFAULT_VERSION[0],
+        parser.add_argument('--v-major', action='store', type=int, default=DEFAULT_VERSION[0],
                             help='sets major version number')
-        parser.add_argument('--v-minor', action='store', type=int, default=self.DEFAULT_VERSION[1],
+        parser.add_argument('--v-minor', action='store', type=int, default=DEFAULT_VERSION[1],
                             help='sets minor version number')
-        parser.add_argument('--v-patch', action='store', type=int, default=self.DEFAULT_VERSION[2],
+        parser.add_argument('--v-patch', action='store', type=int, default=DEFAULT_VERSION[2],
                             help='sets patch version number')
-        parser.add_argument('--v-tag', action='store', default=self.DEFAULT_VERSION[3],
+        parser.add_argument('--v-tag', action='store', default=DEFAULT_VERSION[3],
                             help='sets version tag')
-        parser.add_argument('--v-meta', action='store', default=self.DEFAULT_VERSION[4],
+        parser.add_argument('--v-meta', action='store', default=DEFAULT_VERSION[4],
                             help='sets version metadata')
 
         # Parse arguments
@@ -275,11 +297,18 @@ class BuildScript:
             self.build_type = 'RelWithDebInfo'
 
         # Parse version
+        v_tag = args.v_tag
+        if v_tag is None or v_tag == 'no_tag':
+            v_tag = ''
+
         self.release_version = "{}.{}.{}".format(args.v_major, args.v_minor, args.v_patch)
-        if args.v_tag:
-            self.release_version = "{}-{}".format(self.release_version, args.v_tag)
+        if len(v_tag) != 0:
+            self.release_version = "{}-{}".format(self.release_version, v_tag)
         if args.v_meta:
             self.release_version = "{}+{}".format(self.release_version, args.v_meta)
+
+        self.release_version_array = [args.v_major, args.v_minor, args.v_patch, v_tag]
+        print(f'Version: {self.release_version_array}')
 
         # Set output directory
         self.out_dir_name = 'BugfixedHL-{}-{}-{}-{}-{}'.format(
@@ -289,6 +318,16 @@ class BuildScript:
             self.git_hash, 
             self.date_code
         )
+
+        # Set artifact name
+        if args.ci:
+            with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+                f.write('artifact_name=BugfixedHL-{}-{}-{}-{}'.format(
+                    self.release_version.replace('+', '-'),
+                    self.build_target_name,
+                    get_platform_type(),
+                    self.git_hash
+                ))
 
         out_dir = args.out_dir
         if out_dir:
@@ -332,6 +371,8 @@ class BuildScript:
             args.extend(['-S', self.repo_root])
             args.extend(['-B', self.paths.build])
             args.extend(self.platform.get_cmake_args())
+            args.extend(['-DUSE_UPDATER=TRUE'])
+
             args.extend(self.cmake_args)
 
             if self.platform.need_cmake_build_type_var():
@@ -369,6 +410,7 @@ class BuildScript:
             args.append('--target')
             args.extend(self.build_target.get_build_target_names())
             args.extend(['--config', self.build_type])
+            args.extend(self.platform.get_cmake_build_args())
 
             for i in args:
                 print('\'', i, '\' ', sep='', end='')
@@ -427,36 +469,7 @@ class BuildScript:
     def create_install_metadata(self):
         print("---------------- Creating metadata")
         try:
-            meta = {
-                'version': self.release_version,
-                'files': {}
-            }
-
-            for root, dirs, files in os.walk(self.paths.archive_root):
-                for file in files:
-                    fullpath = os.path.join(root, file)
-                    path = os.path.relpath(fullpath, self.paths.archive_files + 'valve_addon').replace('\\', '/')
-
-                    # Skip files outside of valve_addon
-                    if path.startswith('..'):
-                        continue
-
-                    file_data = {
-                        'size': os.path.getsize(fullpath),
-                        'hash_sha1': ''
-                    }
-
-                    hasher = hashlib.sha1()
-                    with open(fullpath, 'rb') as infile:
-                        buf = infile.read()
-                        hasher.update(buf)
-
-                    file_data['hash_sha1'] = hasher.hexdigest()
-
-                    meta['files'][path] = file_data
-
-            with open(self.paths.archive_files + 'valve_addon/bugfixedhl_install_metadata.dat', "a") as f:
-                f.write(json.dumps(meta, sort_keys=True, indent=4))
+            create_metadata(self.release_version, self.paths.archive_files + 'valve_addon')
         except Exception as e:
             print('Failed to create metadata file: {}.'.format(str(e)))
             exit(1)

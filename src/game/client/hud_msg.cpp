@@ -23,9 +23,12 @@
 #include "hud/ammo.h"
 #include "hud/status_icons.h"
 #include "hud/ammo.h"
+#include "engine_builds.h"
 
 #include "particleman.h"
 extern IParticleMan *g_pParticleMan;
+
+#include "fog.h"
 
 #define MAX_CLIENTS 32
 
@@ -39,12 +42,12 @@ void ClearEventList(void);
 #endif
 
 extern ConVar zoom_sensitivity_ratio;
-extern cvar_t *sensitivity;
 extern float g_lastFOV;
 
 cvar_t *cl_lw = nullptr;
 
 void CAM_ToFirstPerson(void);
+float IN_GetMouseSensitivity();
 
 /// USER-DEFINED SERVER MESSAGE HANDLERS
 
@@ -126,6 +129,16 @@ int CHud::MsgFunc_GameMode(const char *pszName, int iSize, void *pbuf)
 	BEGIN_READ(pbuf, iSize);
 	m_Teamplay = READ_BYTE();
 
+	if (GetEngineBuild() >= ENGINE_BUILD_ANNIVERSARY_FIRST)
+	{
+		if (m_Teamplay)
+			gEngfuncs.pfnClientCmd("richpresence_gamemode Teamplay\n");
+		else
+			gEngfuncs.pfnClientCmd("richpresence_gamemode\n"); // reset
+
+		gEngfuncs.pfnClientCmd("richpresence_update\n");
+	}
+
 	return 1;
 }
 
@@ -168,7 +181,7 @@ int CHud::MsgFunc_SetFOV(const char *pszName, int iSize, void *pbuf)
 	else
 	{
 		// set a new sensitivity that is proportional to the change from the FOV default
-		m_flMouseSensitivity = sensitivity->value * ((float)newfov / (float)def_fov) * zoom_sensitivity_ratio.GetFloat();
+		m_flMouseSensitivity = IN_GetMouseSensitivity() * ((float)newfov / (float)def_fov) * zoom_sensitivity_ratio.GetFloat();
 	}
 
 	// Update crosshair after zoom change
@@ -185,5 +198,35 @@ int CHud::MsgFunc_Concuss(const char *pszName, int iSize, void *pbuf)
 		CHudStatusIcons::Get()->EnableIcon("dmg_concuss", 255, 160, 0);
 	else
 		CHudStatusIcons::Get()->DisableIcon("dmg_concuss");
+	return 1;
+}
+
+int CHud::MsgFunc_Fog(const char *pszName, int iSize, void *pbuf)
+{
+	FogParams fogParams;
+	float density;
+
+	// Reset fog parameters
+	gFog.ClearFog();
+
+	BEGIN_READ(pbuf, iSize);
+
+	fogParams.color[0] = (float)READ_BYTE(); // r
+	fogParams.color[1] = (float)READ_BYTE(); // g
+	fogParams.color[2] = (float)READ_BYTE(); // b
+
+	density = READ_FLOAT();
+
+	if (READ_OK())
+	{
+		fogParams.density = density;
+		fogParams.fogSkybox = true;
+		gFog.SetFogParameters(fogParams);
+	}
+	else
+	{
+		gFog.ClearFog();
+	}
+
 	return 1;
 }

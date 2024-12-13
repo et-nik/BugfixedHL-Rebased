@@ -830,6 +830,12 @@ void UTIL_ScreenFade(CBaseEntity *pEntity, const Vector &color, float fadeTime, 
 
 void UTIL_HudMessage(CBaseEntity *pEntity, const hudtextparms_t &textparms, const char *pMessage)
 {
+	const char *splitMsg = UTIL_SplitHudMessage(pMessage);
+	UTIL_HudMessageRaw(pEntity, textparms, splitMsg);
+}
+
+void UTIL_HudMessageRaw(CBaseEntity *pEntity, const hudtextparms_t &textparms, const char *pMessage)
+{
 	if (!pEntity || !pEntity->IsNetClient())
 		return;
 
@@ -874,13 +880,13 @@ void UTIL_HudMessage(CBaseEntity *pEntity, const hudtextparms_t &textparms, cons
 
 void UTIL_HudMessageAll(const hudtextparms_t &textparms, const char *pMessage)
 {
-	int i;
+	const char *splitMsg = UTIL_SplitHudMessage(pMessage);
 
-	for (i = 1; i <= gpGlobals->maxClients; i++)
+	for (int i = 1; i <= gpGlobals->maxClients; i++)
 	{
 		CBaseEntity *pPlayer = UTIL_PlayerByIndex(i);
 		if (pPlayer)
-			UTIL_HudMessage(pPlayer, textparms, pMessage);
+			UTIL_HudMessageRaw(pPlayer, textparms, splitMsg);
 	}
 }
 
@@ -968,7 +974,48 @@ char *UTIL_dtos4(int d)
 	return buf;
 }
 
-void UTIL_ShowMessage(const char *pString, CBaseEntity *pEntity)
+char *UTIL_SplitHudMessage(const char *src)
+{
+	// Copied from AMX Mod X: https://github.com/alliedmodders/amxmodx/blob/27f451a868c3154a0ab0d4d70e0a650074fd485d/amxmodx/util.cpp#L148-L183
+	// Licensed under the GNU General Public License, version 3 or higher.
+	static char message[512];
+	short b = 0, d = 0, e = 0, c = -1;
+
+	while (src[d] && e < 480)
+	{
+		if (src[d] == ' ')
+		{
+			c = e;
+		}
+		else if (src[d] == '\n')
+		{
+			c = -1;
+			b = 0;
+		}
+
+		message[e++] = src[d++];
+
+		if (++b == 69)
+		{
+			if (c == -1)
+			{
+				message[e++] = '\n';
+				b = 0;
+			}
+			else
+			{
+				message[c] = '\n';
+				b = e - c - 1;
+				c = -1;
+			}
+		}
+	}
+
+	message[e] = 0;
+	return message;
+}
+
+void UTIL_ShowMessageRaw(const char *pString, CBaseEntity *pEntity)
 {
 	if (!pEntity || !pEntity->IsNetClient())
 		return;
@@ -978,17 +1025,22 @@ void UTIL_ShowMessage(const char *pString, CBaseEntity *pEntity)
 	MESSAGE_END();
 }
 
+void UTIL_ShowMessage(const char *pString, CBaseEntity *pEntity)
+{
+	const char *splitMsg = UTIL_SplitHudMessage(pString);
+	UTIL_ShowMessageRaw(splitMsg, pEntity);
+}
+
 void UTIL_ShowMessageAll(const char *pString)
 {
-	int i;
+	const char *splitMsg = UTIL_SplitHudMessage(pString);
 
 	// loop through all players
-
-	for (i = 1; i <= gpGlobals->maxClients; i++)
+	for (int i = 1; i <= gpGlobals->maxClients; i++)
 	{
 		CBaseEntity *pPlayer = UTIL_PlayerByIndex(i);
 		if (pPlayer)
-			UTIL_ShowMessage(pString, pPlayer);
+			UTIL_ShowMessageRaw(splitMsg, pPlayer);
 	}
 }
 
@@ -1409,7 +1461,8 @@ void UTIL_StringToVector(float *pVector, const char *pString)
 	char *pstr, *pfront, tempString[128];
 	int j;
 
-	strcpy(tempString, pString);
+	strncpy(tempString, pString, sizeof(tempString));
+	tempString[sizeof(tempString) - 1] = '\0';
 	pstr = pfront = tempString;
 
 	for (j = 0; j < 3; j++) // lifted from pr_edict.c
@@ -1439,7 +1492,8 @@ void UTIL_StringToIntArray(int *pVector, int count, const char *pString)
 	char *pstr, *pfront, tempString[128];
 	int j;
 
-	strcpy(tempString, pString);
+	strncpy(tempString, pString, sizeof(tempString));
+	tempString[sizeof(tempString) - 1] = '\0';
 	pstr = pfront = tempString;
 
 	for (j = 0; j < count; j++) // lifted from pr_edict.c
@@ -1644,11 +1698,11 @@ float UTIL_DotPoints(const Vector &vecSrc, const Vector &vecCheck, const Vector 
 //=========================================================
 // UTIL_StripToken - for redundant keynames
 //=========================================================
-void UTIL_StripToken(const char *pKey, char *pDest)
+void UTIL_StripToken(const char *pKey, char *pDest, int nLen)
 {
 	int i = 0;
 
-	while (pKey[i] && pKey[i] != '#')
+	while (i < nLen - 1 && pKey[i] && pKey[i] != '#')
 	{
 		pDest[i] = pKey[i];
 		i++;
@@ -2214,7 +2268,7 @@ int CRestore::ReadField(void *pBaseData, TYPEDESCRIPTION *pFields, int fieldCoun
 	{
 		fieldNumber = (i + startField) % fieldCount;
 		pTest = &pFields[fieldNumber];
-		if (!_stricmp(pTest->fieldName, pName))
+		if (pTest->fieldName && !_stricmp(pTest->fieldName, pName))
 		{
 			if (!m_global || !(pTest->flags & FTYPEDESC_GLOBAL))
 			{

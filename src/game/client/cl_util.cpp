@@ -25,6 +25,7 @@
 #include "hud.h"
 #include "cl_util.h"
 #include <string.h>
+#include "engine_builds.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846 // matches value in gcc v2 math.h
@@ -81,6 +82,14 @@ void VectorInverse(float *v)
 	v[2] = -v[2];
 }
 
+int EngineFilteredClientCmd(const char *const pszCmdString)
+{
+	if (gHUD.GetEngineBuild() >= ENGINE_BUILD_ANNIVERSARY_FIRST)
+		return gEngfuncs.pfnFilteredClientCmd(pszCmdString);
+	else
+		return gEngfuncs.pfnClientCmd(pszCmdString);
+}
+
 void ConsolePrint(const char *string)
 {
 	if (gHUD.GetColorCodeAction() == ColorCodeAction::Ignore)
@@ -91,16 +100,8 @@ void ConsolePrint(const char *string)
 
 HSPRITE LoadSprite(const char *pszName)
 {
-	int i;
 	char sz[256];
-
-	if (ScreenWidth < 640)
-		i = 320;
-	else
-		i = 640;
-
-	sprintf(sz, pszName, i);
-
+	sprintf(sz, pszName, gHUD.m_iRes);
 	return SPR_Load(sz);
 }
 

@@ -55,7 +55,7 @@ extern enginefuncs_t g_engfuncs;
 #define TRACE_HULL           (*g_engfuncs.pfnTraceHull)
 #define GET_AIM_VECTOR       (*g_engfuncs.pfnGetAimVector)
 #define SERVER_COMMAND       (*g_engfuncs.pfnServerCommand)
-#define SERVER_EXECUTE       (*g_engfuncs.pfnServerExecute)
+#define SERVER_EXECUTE_HL    (*g_engfuncs.pfnServerExecute)
 #define CLIENT_COMMAND       (*g_engfuncs.pfnClientCommand)
 #define PARTICLE_EFFECT      (*g_engfuncs.pfnParticleEffect)
 #define LIGHT_STYLE          (*g_engfuncs.pfnLightStyle)
@@ -82,6 +82,18 @@ inline void MESSAGE_BEGIN(int msg_dest, int msg_type, const float *pOrigin = NUL
 #define WRITE_COORD      (*g_engfuncs.pfnWriteCoord)
 #define WRITE_STRING     (*g_engfuncs.pfnWriteString)
 #define WRITE_ENTITY     (*g_engfuncs.pfnWriteEntity)
+
+inline void WRITE_FLOAT(float val)
+{
+	char bytes[sizeof(val)];
+	memcpy(bytes, &val, sizeof(bytes));
+
+	for (int i = 0; i < sizeof(bytes); i++)
+	{
+		g_engfuncs.pfnWriteByte(bytes[i]);
+	}
+}
+
 #define CVAR_REGISTER    (*g_engfuncs.pfnCVarRegister)
 #define CVAR_GET_FLOAT   (*g_engfuncs.pfnCVarGetFloat)
 #define CVAR_GET_STRING  (*g_engfuncs.pfnCVarGetString)
@@ -91,6 +103,7 @@ inline void MESSAGE_BEGIN(int msg_dest, int msg_type, const float *pOrigin = NUL
 #define ALERT            (*g_engfuncs.pfnAlertMessage)
 #define ENGINE_FPRINTF   (*g_engfuncs.pfnEngineFprintf)
 #define ALLOC_PRIVATE    (*g_engfuncs.pfnPvAllocEntPrivateData)
+
 inline void *GET_PRIVATE(edict_t *pent)
 {
 	if (pent)

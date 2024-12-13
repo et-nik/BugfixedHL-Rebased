@@ -158,6 +158,7 @@ static char grgchTextureType[CTEXTURESMAX];
 
 int g_onladder = 0;
 static int s_bBHopCap = true;
+static EUseSlowDownType s_nUseSlowDownType = EUseSlowDownType::New;
 static int s_iIsAg = false;
 
 void PM_SetIsAG(int state)
@@ -165,15 +166,52 @@ void PM_SetIsAG(int state)
 	s_iIsAg = state;
 }
 
+EUseSlowDownType PM_GetUseSlowDownType()
+{
+	return s_nUseSlowDownType;
+}
+
+void PM_SetUseSlowDownType(EUseSlowDownType value)
+{
+#ifdef CLIENT_DLL
+	if (s_nUseSlowDownType != EUseSlowDownType::AutoDetect && value == EUseSlowDownType::AutoDetect)
+		PM_ResetUseSlowDownDetection();
+#endif
+
+	s_nUseSlowDownType = value;
+}
+
 #ifdef CLIENT_DLL
 
-#define BHOP_DETECT_DELAY 0.3f
+static constexpr float BHOP_DETECT_DELAY = 0.3f;
+static constexpr float USE_SLOWDOWN_DETECT_MIN = 0.25f;
+static constexpr float USE_SLOWDOWN_DETECT_MAX = 0.4f;
+
+enum class EUseSlowDownDetectionState
+{
+	None,
+
+	//! speed < USE_SLOWDOWN_DETECT_MIN * maxSpeed
+	LowSpeed,
+
+	//! USE_SLOWDOWN_DETECT_MIN * maxSpeed <= speed < USE_SLOWDOWN_DETECT_MAX * maxSpeed
+	MidSpeed,
+
+	//! speed >= USE_SLOWDOWN_DETECT_MAX * maxSpeed
+	HighSpeed,
+
+	//! Successfully detected the server mode.
+	Done,
+};
 
 static int s_iOnGround;
 static int s_iWaterlevel;
 static int s_iMoveType;
-static int s_iBHopState = 1;
+static EBHopCap s_iBHopState = EBHopCap::Enabled;
 static float s_flBHopCheckTime = 0.0f;
+
+static EUseSlowDownDetectionState s_nUseSlowDownDetectionState = EUseSlowDownDetectionState::None;
+static int s_iUseSlowDownCount = 0;
 
 int PM_GetOnGround()
 {
@@ -190,12 +228,12 @@ int PM_GetMoveType()
 	return s_iMoveType;
 }
 
-int PM_GetBHopCapState()
+EBHopCap PM_GetBHopCapState()
 {
 	return s_iBHopState;
 }
 
-void PM_SetBHopCapState(int state)
+void PM_SetBHopCapState(EBHopCap state)
 {
 	s_iBHopState = state;
 	PM_ResetBHopDetection();
@@ -203,12 +241,18 @@ void PM_SetBHopCapState(int state)
 
 void PM_ResetBHopDetection()
 {
-	if (s_iBHopState == 2)
+	if (s_iBHopState == EBHopCap::AutoDetect)
 	{
 		// Autodetect
 		s_bBHopCap = false;
 		s_flBHopCheckTime = 0.0f;
 	}
+}
+
+void PM_ResetUseSlowDownDetection()
+{
+	s_nUseSlowDownDetectionState = EUseSlowDownDetectionState::None;
+	s_iUseSlowDownCount = 0;
 }
 
 #else
@@ -224,6 +268,27 @@ void PM_SetBHopCapEnabled(int state)
 }
 
 #endif
+
+static EUseSlowDownType PM_GetActualUseSlowDownType()
+{
+#ifdef CLIENT_DLL
+	if (s_nUseSlowDownType == EUseSlowDownType::AutoDetect)
+	{
+		if (s_nUseSlowDownDetectionState == EUseSlowDownDetectionState::Done)
+		{
+			// Detected that the server uses Old method
+			return EUseSlowDownType::Old;
+		}
+		else
+		{
+			// Not yet detected or the server uses New
+			return EUseSlowDownType::New;
+		}
+	}
+#endif
+
+	return s_nUseSlowDownType;
+}
 
 void PM_SwapTextures(int i, int j)
 {
@@ -673,7 +738,8 @@ void PM_UpdateStepSound(void)
 	speed = pmove->velocity.Length();
 
 	// determine if we are on a ladder
-	fLadder = (pmove->movetype == MOVETYPE_FLY); // IsOnLadder();
+	// The Barnacle Grapple sets the FL_IMMUNE_LAVA flag to indicate that the player is not on a ladder - Solokiller
+	fLadder = (pmove->movetype == MOVETYPE_FLY) && !(pmove->flags & FL_IMMUNE_LAVA); // IsOnLadder();
 
 	// UNDONE: need defined numbers for run, walk, crouch, crouch run velocities!!!!
 	if ((pmove->flags & FL_DUCKING) || fLadder)
@@ -1057,7 +1123,12 @@ int PM_FlyMove(void)
 		//
 		// modify original_velocity so it parallels all of the clip planes
 		//
-		if (pmove->movetype == MOVETYPE_WALK && ((pmove->onground == -1) || (pmove->friction != 1))) // relfect player velocity
+		// relfect player velocity
+		// Only give this a try for first impact plane because you can get yourself stuck in an acute corner by jumping in place
+		//  and pressing forward and nobody was really using this bounce/reflection feature anyway...
+		if (numplanes == 1 &&
+			pmove->movetype == MOVETYPE_WALK &&
+			((pmove->onground == -1) || (pmove->friction != 1)))
 		{
 			for (i = 0; i < numplanes; i++)
 			{
@@ -1822,9 +1893,9 @@ int PM_CheckStuck(void)
 
 	VectorCopy(pmove->origin, base);
 
-	// Deal with precision error in network.
+	// Deal with precision error in network and cases where the player can get stuck on level transitions in singleplayer.
 	// Only an issue on the client.
-	if (!pmove->server)
+	if (!pmove->server || !pmove->multiplayer)
 	{
 		i = 0;
 		do
@@ -2255,7 +2326,7 @@ void PM_LadderMove(physent_t *pLadder)
 		if (!s_iIsAg && (pmove->flags & FL_DUCKING))
 			climbSpeed *= PLAYER_DUCKING_MULTIPLIER;
 
-		AngleVectors(pmove->angles, &vpn, &v_right, nullptr);
+		PM_AngleVectors(pmove->angles, &vpn, &v_right, nullptr);
 
 		if (pmove->cmd.buttons & IN_BACK)
 			forward -= climbSpeed;
@@ -2733,9 +2804,9 @@ void PM_Jump(void)
 	// BHop autodetection
 #ifdef CLIENT_DLL
 	float speed = sqrtf(pmove->velocity[0] * pmove->velocity[0] + pmove->velocity[1] * pmove->velocity[1]);
-	int isLongJumping = cansuperjump && (pmove->oldbuttons & IN_DUCK);
+	bool isLongJumping = cansuperjump && (pmove->oldbuttons & IN_DUCK);
 
-	if (s_iBHopState == 2 && s_flBHopCheckTime == 0 && speed >= pmove->maxspeed * BUNNYJUMP_MAX_SPEED_FACTOR && !isLongJumping)
+	if (s_iBHopState == EBHopCap::AutoDetect && s_flBHopCheckTime == 0 && speed >= pmove->maxspeed * BUNNYJUMP_MAX_SPEED_FACTOR && !isLongJumping)
 	{
 		s_flBHopCheckTime = pmove->time + (BHOP_DETECT_DELAY * 1000);
 	}
@@ -2925,7 +2996,7 @@ float PM_CalcRoll(const Vector &angles, const Vector &velocity, float rollangle,
 	float value;
 	Vector forward, right, up;
 
-	AngleVectors(angles, &forward, &right, &up);
+	PM_AngleVectors(angles, &forward, &right, &up);
 
 	side = DotProduct(velocity, right);
 
@@ -2982,6 +3053,15 @@ void PM_CheckParamters(void)
 	if (maxspeed != 0.0)
 	{
 		pmove->maxspeed = min(maxspeed, pmove->maxspeed);
+	}
+
+	// Slow down, I'm pulling it! (a box maybe) but only when I'm standing on ground
+	//
+	// JoshA: Moved this to CheckParamters rather than working on the velocity,
+	// as otherwise it affects every integration step incorrectly.
+	if (PM_GetActualUseSlowDownType() == EUseSlowDownType::New && (pmove->onground != -1) && (pmove->cmd.buttons & IN_USE))
+	{
+		pmove->maxspeed *= 1.0f / 3.0f;
 	}
 
 	if ((spd != 0.0) && (spd > pmove->maxspeed))
@@ -3087,7 +3167,7 @@ void PM_PlayerMove(qboolean server)
 	PM_ReduceTimers();
 
 	// Convert view angles to vectors
-	AngleVectors(pmove->angles, &pmove->forward, &pmove->right, &pmove->up);
+	PM_AngleVectors(pmove->angles, &pmove->forward, &pmove->right, &pmove->up);
 
 	// PM_ShowClipBox();
 
@@ -3104,7 +3184,13 @@ void PM_PlayerMove(qboolean server)
 	{
 		if (PM_CheckStuck())
 		{
-			return; // Can't move, we're stuck
+			// Let the user try to duck to get unstuck
+			PM_Duck();
+
+			if (PM_CheckStuck())
+			{
+				return; // Can't move, we're stuck
+			}
 		}
 	}
 
@@ -3153,11 +3239,70 @@ void PM_PlayerMove(qboolean server)
 		}
 	}
 
-	// Slow down, I'm pulling it! (a box maybe) but only when I'm standing on ground
 	if ((pmove->onground != -1) && (pmove->cmd.buttons & IN_USE))
 	{
-		VectorScale(pmove->velocity, 0.3, pmove->velocity);
+		if (PM_GetActualUseSlowDownType() == EUseSlowDownType::Old)
+		{
+			// Slow down, I'm pulling it! (a box maybe) but only when I'm standing on ground
+			VectorScale(pmove->velocity, 0.3, pmove->velocity);
+		}
+#ifdef CLIENT_DLL
+		else if (s_nUseSlowDownType == EUseSlowDownType::AutoDetect &&
+			s_nUseSlowDownDetectionState != EUseSlowDownDetectionState::Done)
+		{
+			if (pmove->cmd.buttons & (IN_FORWARD | IN_FORWARD | IN_MOVELEFT | IN_MOVERIGHT) &&
+				pmove->velocity.Length2DSqr() >= 25.0f)
+			{
+				// We're moving in some direction. Try to auto-detect server's +use slowdown type
+				EUseSlowDownDetectionState oldState = s_nUseSlowDownDetectionState;
+				EUseSlowDownDetectionState newState = EUseSlowDownDetectionState::None;
+				float speed = pmove->velocity.Length2D();
+
+				if (speed >= USE_SLOWDOWN_DETECT_MAX * pmove->maxspeed)
+					newState = EUseSlowDownDetectionState::HighSpeed;
+				else if (speed >= USE_SLOWDOWN_DETECT_MIN * pmove->maxspeed)
+					newState = EUseSlowDownDetectionState::MidSpeed;
+				else
+					newState = EUseSlowDownDetectionState::LowSpeed;
+
+				if (oldState == EUseSlowDownDetectionState::HighSpeed && newState == EUseSlowDownDetectionState::LowSpeed)
+				{
+					// Sudden slow down. This occurs when the client re-synchronizes with the server.
+					s_iUseSlowDownCount++;
+				}
+				else if (oldState == EUseSlowDownDetectionState::LowSpeed && newState == EUseSlowDownDetectionState::HighSpeed)
+				{
+					// Sudden speed up. Something went wrong.
+					PM_ResetUseSlowDownDetection();
+				}
+
+				if (s_iUseSlowDownCount >= 5)
+				{
+					// Slow down has happened a few times. Assume the server uses the old method.
+					PM_ResetUseSlowDownDetection();
+					pmove->Con_Printf("Setting +use slowdown to Old to match the server\n");
+					s_nUseSlowDownDetectionState = EUseSlowDownDetectionState::Done;
+				}
+				else
+				{
+					s_nUseSlowDownDetectionState = newState;
+				}
+			}
+			else
+			{
+				// Reset auto-detection
+				PM_ResetUseSlowDownDetection();
+			}
+		}
+#endif
 	}
+#ifdef CLIENT_DLL
+	else if (s_nUseSlowDownDetectionState != EUseSlowDownDetectionState::Done)
+	{
+		// Reset auto-detection
+		PM_ResetUseSlowDownDetection();
+	}
+#endif
 
 	// Handle movement
 	switch (pmove->movetype)
@@ -3481,7 +3626,7 @@ void PM_Move(struct playermove_s *ppmove, int server)
 #ifdef CLIENT_DLL
 	s_iMoveType = pmove->movetype;
 
-	if (s_iBHopState == 2 && s_flBHopCheckTime > 0)
+	if (s_iBHopState == EBHopCap::AutoDetect && s_flBHopCheckTime > 0)
 	{
 		float speed = sqrtf(pmove->velocity[0] * pmove->velocity[0] + pmove->velocity[1] * pmove->velocity[1]);
 

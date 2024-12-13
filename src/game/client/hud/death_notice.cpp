@@ -42,8 +42,9 @@ struct DeathNoticeItem
 };
 
 extern ConVar hud_deathnotice_vgui;
-ConVar cl_killsound("cl_killsound", "1", FCVAR_BHL_ARCHIVE, "Play a bell sound on kill");
-ConVar hud_deathnotice_time("hud_deathnotice_time", "6", FCVAR_BHL_ARCHIVE, "How long should death notice stay up for");
+ConVar cl_killsound("cl_killsound", "1", FCVAR_BHL_ARCHIVE, "Play a sound on kill");
+ConVar cl_killsound_path("cl_killsound_path", "buttons/bell1.wav", FCVAR_BHL_ARCHIVE, "Path to a sound on kill");
+ConVar hud_deathnotice_time("hud_deathnotice_time", "6", FCVAR_ARCHIVE | FCVAR_BHL_ARCHIVE, "How long should death notice stay up for");
 ConVar hud_deathnotice_color("hud_deathnotice_color", "255 80 0", FCVAR_BHL_ARCHIVE, "Color of death notice sprite");
 ConVar hud_deathnotice_color_tk("hud_deathnotice_color_tk", "10 240 10", FCVAR_BHL_ARCHIVE, "Color of death notice teamkill sprite");
 ConVar hud_deathnotice_draw_always("hud_deathnotice_draw_always", "0", FCVAR_BHL_ARCHIVE, "Display the kill feed even when hud_draw is 0. Useful when recording frag movies.");
@@ -152,6 +153,12 @@ void CHudDeathNotice::Think()
 // This message handler may be better off elsewhere
 int CHudDeathNotice::MsgFunc_DeathMsg(const char *pszName, int iSize, void *pbuf)
 {
+	if (!GetThisPlayerInfo())
+	{
+		// Not yet connected
+		return 1;
+	}
+
 	m_iFlags |= HUD_ACTIVE;
 
 	BEGIN_READ(pbuf, iSize);
@@ -160,7 +167,7 @@ int CHudDeathNotice::MsgFunc_DeathMsg(const char *pszName, int iSize, void *pbuf
 	int victim = READ_BYTE();
 
 	char killedwith[MAX_WEAPON_NAME];
-	strcpy(killedwith, "d_");
+	V_strcpy_safe(killedwith, "d_");
 	strncat(killedwith, READ_STRING(), sizeof(killedwith) - 3);
 	killedwith[sizeof(killedwith) - 1] = 0;
 
@@ -190,7 +197,7 @@ int CHudDeathNotice::MsgFunc_DeathMsg(const char *pszName, int iSize, void *pbuf
 	// Get the Killer's name
 	CPlayerInfo *killerInfo = nullptr;
 	const char *killer_name;
-	if (killer != 0 && (killerInfo = GetPlayerInfo(killer))->IsConnected())
+	if (killer != 0 && (killerInfo = GetPlayerInfoSafe(killer)))
 	{
 		killer_name = killerInfo->GetDisplayName();
 
@@ -216,7 +223,7 @@ int CHudDeathNotice::MsgFunc_DeathMsg(const char *pszName, int iSize, void *pbuf
 	// Get the Victim's name
 	const char *victim_name = NULL;
 	// If victim is -1, the killer killed a specific, non-player object (like a sentrygun)
-	if (((char)victim) != -1)
+	if (((char)victim) != -1 && GetPlayerInfoSafe(victim))
 		victim_name = GetPlayerInfo(victim)->GetDisplayName();
 	if (!victim_name)
 	{
@@ -225,9 +232,9 @@ int CHudDeathNotice::MsgFunc_DeathMsg(const char *pszName, int iSize, void *pbuf
 	}
 	else
 	{
-		CPlayerInfo *victimInfo = GetPlayerInfo(victim);
+		CPlayerInfo *victimInfo = GetPlayerInfoSafe(victim);
 
-		if (victimInfo->GetTeamNumber() == 0)
+		if (!victimInfo || victimInfo->GetTeamNumber() == 0)
 		{
 			rgDeathNoticeList[i].bVictimHasColor = false;
 		}
@@ -247,7 +254,7 @@ int CHudDeathNotice::MsgFunc_DeathMsg(const char *pszName, int iSize, void *pbuf
 		rgDeathNoticeList[i].iNonPlayerKill = TRUE;
 
 		// Store the object's name in the Victim slot (skip the d_ bit)
-		strcpy(rgDeathNoticeList[i].szVictim, killedwith + 2);
+		V_strcpy_safe(rgDeathNoticeList[i].szVictim, killedwith + 2);
 	}
 	else
 	{
@@ -267,9 +274,9 @@ int CHudDeathNotice::MsgFunc_DeathMsg(const char *pszName, int iSize, void *pbuf
 	rgDeathNoticeList[i].flDisplayTime = gHUD.m_flTime + DEATHNOTICE_DISPLAY_TIME;
 
 	// Play kill sound
-	if (killerInfo && killerInfo->IsThisPlayer() && !rgDeathNoticeList[i].iNonPlayerKill && !rgDeathNoticeList[i].iSuicide && cl_killsound.GetBool())
+	if (killerInfo && killerInfo->IsThisPlayer() && !rgDeathNoticeList[i].iNonPlayerKill && !rgDeathNoticeList[i].iSuicide && cl_killsound.GetFloat() > 0)
 	{
-		PlaySound("buttons/bell1.wav", 1.0f);
+		PlaySound(cl_killsound_path.GetString(), cl_killsound.GetFloat());
 	}
 
 	// Set color of own kills/deaths to yellow
@@ -319,9 +326,9 @@ int CHudDeathNotice::MsgFunc_DeathMsg(const char *pszName, int iSize, void *pbuf
 
 			// replace the code names with the 'real' names
 			if (!strcmp(killedwith + 2, "egon"))
-				strcpy(killedwith, "d_gluon gun");
+				V_strcpy_safe(killedwith, "d_gluon gun");
 			if (!strcmp(killedwith + 2, "gauss"))
-				strcpy(killedwith, "d_tau cannon");
+				V_strcpy_safe(killedwith, "d_tau cannon");
 
 			ConsolePrint(killedwith + 2); // skip over the "d_" part
 		}

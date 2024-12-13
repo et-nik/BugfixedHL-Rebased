@@ -6,6 +6,7 @@
 #include <tier1/interface.h>
 #include <tier1/strtools.h>
 #include <tier2/tier2.h>
+#include <vgui/IScheme.h>
 #include <IGameConsole.h>
 #include <convar.h>
 
@@ -18,13 +19,23 @@ namespace console
 // Ambiguity between ::Color (Source SDK) and vgui::Color (VGUI1)
 using ::Color;
 
+struct ColorOffset
+{
+	size_t printOffset;
+	size_t dprintOffset;
+};
+
+constexpr ColorOffset COLOR_OFFSETS[] = {
 #ifdef PLATFORM_WINDOWS
-constexpr size_t PRINT_COLOR_OFFSET = 0x128;
-constexpr size_t DPRINT_COLOR_OFFSET = 0x12C;
+	ColorOffset { 0x128, 0x12C }, // Pre-9884
+	ColorOffset { 0x12C, 0x130 }, // 9884
+	ColorOffset { 0x130, 0x134 }, // 9891
 #else
-constexpr size_t PRINT_COLOR_OFFSET = 0x124;
-constexpr size_t DPRINT_COLOR_OFFSET = 0x128;
+	ColorOffset { 0x124, 0x128 }, // Pre-9884
+	ColorOffset { 0x128, 0x12C }, // 9884
+	ColorOffset { 0x12C, 0x130 }, // 9891
 #endif
+};
 
 class CGameConsolePrototype : public IGameConsole
 {
@@ -48,9 +59,13 @@ static void UnloadGameUI();
 //-----------------------------------------------------
 // Console color hook
 //-----------------------------------------------------
-// Default color for checking that offset is correct
+// Default color if scheme fails to load
 static const Color s_DefaultColor = Color(216, 222, 211, 255);
 static const Color s_DefaultDColor = Color(196, 181, 80, 255);
+
+// Color for checking that offset is correct
+static Color s_ExpectedColor;
+static Color s_ExpectedDColor;
 
 // Used when failed to find color in GameUI
 static Color s_StubColor = s_DefaultColor;
@@ -60,6 +75,7 @@ static Color s_StubDColor = s_DefaultDColor;
 static Color *s_ConColor = &s_StubColor;
 static Color *s_ConDColor = &s_StubDColor;
 
+static void ReadSchemeColors();
 static void HookConsoleColor();
 
 //-----------------------------------------------------
@@ -184,8 +200,8 @@ void console::SetColor(::Color c)
 
 void console::ResetColor()
 {
-	*s_ConColor = s_DefaultColor;
-	*s_ConDColor = s_DefaultDColor;
+	*s_ConColor = s_ExpectedColor;
+	*s_ConDColor = s_ExpectedDColor;
 }
 
 //-----------------------------------------------------
@@ -216,6 +232,32 @@ void console::UnloadGameUI()
 //-----------------------------------------------------
 // Console color hook
 //-----------------------------------------------------
+void console::ReadSchemeColors()
+{
+	// Set the default color (in case scheme fails to load)
+	s_ExpectedColor = s_DefaultColor;
+	s_ExpectedDColor = s_DefaultDColor;
+
+	constexpr char SCHEME_NAME[] = "BaseUI";
+
+	vgui2::HScheme hScheme = g_pVGuiSchemeManager->GetScheme(SCHEME_NAME);
+	if (!hScheme)
+	{
+		ConPrintf(ConColor::Red, "Console Color: Failed to open scheme %s\n", SCHEME_NAME);
+		return;
+	}
+
+	vgui2::IScheme* pScheme = g_pVGuiSchemeManager->GetIScheme(hScheme);
+	if (!pScheme)
+	{
+		ConPrintf(ConColor::Red, "Console Color: Failed to get pointer to scheme %s [%lu]\n", SCHEME_NAME, hScheme);
+		return;
+	}
+
+	s_ExpectedColor = pScheme->GetColor("FgColor", s_DefaultColor);
+	s_ExpectedDColor = pScheme->GetColor("BrightControlText", s_DefaultDColor);
+}
+
 void console::HookConsoleColor()
 {
 	LoadGameUI();
@@ -240,27 +282,55 @@ void console::HookConsoleColor()
 		return;
 	}
 
-	auto fnHookSpecificColor = [&](size_t offset, Color compare, Color *&target) -> bool {
+	// Read console colors from the GameUI scheme
+	ReadSchemeColors();
+	s_StubColor = s_ExpectedColor;
+	s_StubDColor = s_ExpectedDColor;
+
+	auto fnTryHookSpecificColor = [&](size_t offset, Color compare, Color **target) -> bool
+	{
 		size_t iColorPtr = reinterpret_cast<size_t>(pGameConsole->m_pConsole) + offset;
 		Color *pColor = reinterpret_cast<Color *>(iColorPtr);
 
 		if (*pColor != compare)
 		{
-			ConPrintf(ConColor::Red,
-			    "HookConsoleColor: check failed.\n"
-			    "  Expected: %d %d %d %d\n"
-			    "  Got: %d %d %d %d.\n",
-			    compare.r(), compare.g(), compare.b(), compare.a(),
-			    pColor->r(), pColor->g(), pColor->b(), pColor->a());
+			if (!target)
+			{
+				ConPrintf(ConColor::Red,
+				    "  Offset: 0x%X\n"
+				    "    Expected: %d %d %d %d\n"
+				    "    Got: %d %d %d %d.\n",
+					offset,
+				    compare.r(), compare.g(), compare.b(), compare.a(),
+				    pColor->r(), pColor->g(), pColor->b(), pColor->a());
+			}
 			return false;
 		}
 
-		target = pColor;
+		if (target)
+			*target = pColor;
+
 		return true;
 	};
 
-	if (fnHookSpecificColor(PRINT_COLOR_OFFSET, s_DefaultColor, s_ConColor) && fnHookSpecificColor(DPRINT_COLOR_OFFSET, s_DefaultDColor, s_ConDColor))
+	Color *pPrintColor = nullptr;
+	Color *pDPrintColor = nullptr;
+
+	// Try different offsets
+	for (const ColorOffset& offset : COLOR_OFFSETS)
 	{
+		if (fnTryHookSpecificColor(offset.printOffset, s_ExpectedColor, &pPrintColor) &&
+			fnTryHookSpecificColor(offset.dprintOffset, s_ExpectedDColor, &pDPrintColor))
+		{
+			// Found the offset
+			break;
+		}
+	}
+
+	if (pPrintColor && pDPrintColor)
+	{
+		s_ConColor = pPrintColor;
+		s_ConDColor = pDPrintColor;
 #ifdef _DEBUG
 		ConPrintf(ConColor::Cyan, "HookConsoleColor: Success!\n");
 #endif
@@ -268,6 +338,13 @@ void console::HookConsoleColor()
 	else
 	{
 		ConPrintf(ConColor::Red, "Failed to hook console color.\n");
+
+		// Print offsets and values
+		for (const ColorOffset &offset : COLOR_OFFSETS)
+		{
+			fnTryHookSpecificColor(offset.printOffset, s_ExpectedColor, nullptr);
+			fnTryHookSpecificColor(offset.dprintOffset, s_ExpectedDColor, nullptr);
+		}
 	}
 }
 
@@ -333,8 +410,8 @@ static void console::RedirectedConPrintf(const char *pszFormat, ...)
 {
 	// Print redirected messages with Con_Printf color instead of Con_DPrintf
 	// But only if color wasn't changed.
-	if (*s_ConColor == s_DefaultColor)
-		*s_ConDColor = s_DefaultColor;
+	if (*s_ConColor == s_ExpectedColor)
+		*s_ConDColor = s_ExpectedColor;
 
 	va_list args;
 	va_start(args, pszFormat);
@@ -345,8 +422,8 @@ static void console::RedirectedConPrintf(const char *pszFormat, ...)
 
 	va_end(args);
 
-	if (*s_ConColor == s_DefaultColor)
-		*s_ConDColor = s_DefaultDColor;
+	if (*s_ConColor == s_ExpectedColor)
+		*s_ConDColor = s_ExpectedDColor;
 }
 
 void console::EnableRedirection()
@@ -426,6 +503,66 @@ void ConPrintf(::Color color, const char *fmt, ...)
 
 CON_COMMAND(find, "Searches cvars and commands for a string.")
 {
+	constexpr const char *CVAR_FLAG_NAMES[32] = {
+		"archive", // 0
+		"userinfo", // 1
+		"server", // 2
+		"extdll", // 3
+		"client", // 4
+		"protected", // 5
+		"sponly", // 6
+		"printonly", // 7
+		"unlogged", // 8
+		"noextraws", // 9
+		"privileged", // 10
+		"filterable", // 11
+		nullptr, // 12
+		nullptr, // 13
+		nullptr, // 14
+		nullptr, // 15
+		nullptr, // 16
+		nullptr, // 17
+		nullptr, // 18
+		nullptr, // 19
+		nullptr, // 20
+		nullptr, // 21
+		"bhl_archive", // 22
+		"devonly", // 23
+	};
+
+	constexpr const char *CMD_FLAG_NAMES[32] = {
+		"hud",        // 0
+		"game",       // 1
+		"wrapper",    // 2
+		"filtered",   // 3
+		"restricted", // 4
+	};
+
+	auto fnPrintFlags = [](int flags, const char *const *flagNames)
+	{
+		bool isFirstPrinted = false;
+
+		for (unsigned i = 0; i < 32; i++)
+		{
+			unsigned flag = 1 << i;
+
+			if (flags & flag)
+			{
+				if (isFirstPrinted)
+					ConPrintf(" ");
+
+				isFirstPrinted = true;
+
+				if (flagNames[i])
+					ConPrintf("%s", flagNames[i]);
+				else
+					ConPrintf("unknown_%d", i);
+			}
+		}
+
+		return isFirstPrinted;
+	};
+
 	struct FindResult
 	{
 		const char *name;
@@ -497,57 +634,6 @@ CON_COMMAND(find, "Searches cvars and commands for a string.")
 		return strcmp(lhs->name, rhs->name);
 	});
 
-	auto fnPrintFlags = [](int flags) {
-		constexpr const char *flagName[32] = {
-			"archive", // 0
-			"userinfo", // 1
-			"server", // 2
-			"extdll", // 3
-			"client", // 4
-			"protected", // 5
-			"sponly", // 6
-			"printonly", // 7
-			"unlogged", // 8
-			"noextraws", // 9
-			nullptr, // 10
-			nullptr, // 11
-			nullptr, // 12
-			nullptr, // 13
-			nullptr, // 14
-			nullptr, // 15
-			nullptr, // 16
-			nullptr, // 17
-			nullptr, // 18
-			nullptr, // 19
-			nullptr, // 20
-			nullptr, // 21
-			"bhl_archive", // 22
-			"devonly", // 23
-		};
-
-		bool isFirstPrinted = false;
-
-		for (unsigned i = 0; i < 32; i++)
-		{
-			unsigned flag = 1 << i;
-
-			if (flags & flag)
-			{
-				if (isFirstPrinted)
-					ConPrintf(" ");
-
-				isFirstPrinted = true;
-
-				if (flagName[i])
-					ConPrintf("%s", flagName[i]);
-				else
-					ConPrintf("unknown_%d", i);
-			}
-		}
-
-		return isFirstPrinted;
-	};
-
 	// Display results
 	for (FindResult &i : found)
 	{
@@ -562,7 +648,7 @@ CON_COMMAND(find, "Searches cvars and commands for a string.")
 			else
 				ConPrintf("\n");
 
-			if (fnPrintFlags(i.cvar->flags))
+			if (fnPrintFlags(i.cvar->flags, CVAR_FLAG_NAMES))
 				ConPrintf("\n");
 
 			if (cv && cv->GetDescription()[0])
@@ -574,7 +660,7 @@ CON_COMMAND(find, "Searches cvars and commands for a string.")
 
 			ConPrintf(ConColor::Yellow, "\"%s\"\n", i.name);
 
-			if (fnPrintFlags(i.cmd->flags))
+			if (fnPrintFlags(i.cmd->flags, CMD_FLAG_NAMES))
 				ConPrintf("\n");
 
 			if (cv)

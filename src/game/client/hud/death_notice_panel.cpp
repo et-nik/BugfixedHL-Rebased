@@ -31,6 +31,12 @@ CHudDeathNoticePanel::CHudDeathNoticePanel()
 void CHudDeathNoticePanel::VidInit()
 {
 	m_HUD_d_skull = gHUD.GetSpriteIndex("d_skull");
+
+	int cornerWide, cornerTall;
+	GetCornerTextureSize(cornerWide, cornerTall);
+
+	int minRowTall = std::max(cornerTall * 2, gHUD.GetSpriteRect(m_HUD_d_skull).GetHeight());
+	m_iRowTall = std::max(m_iRowHeight, minRowTall);
 }
 
 void CHudDeathNoticePanel::InitHudData()
@@ -76,9 +82,15 @@ void CHudDeathNoticePanel::Think()
 
 void CHudDeathNoticePanel::AddItem(int killerId, int victimId, const char *killedwith)
 {
+	if (!GetThisPlayerInfo())
+	{
+		// Not yet connected
+		return;
+	}
+
 	Entry e;
-	CPlayerInfo *killer = (killerId >= 1 && killerId <= MAX_PLAYERS) ? GetPlayerInfo(killerId) : nullptr;
-	CPlayerInfo *victim = (victimId >= 1 && victimId <= MAX_PLAYERS) ? GetPlayerInfo(victimId) : nullptr;
+	CPlayerInfo *killer = GetPlayerInfoSafe(killerId);
+	CPlayerInfo *victim = GetPlayerInfoSafe(victimId);
 	int thisPlayerId = GetThisPlayerInfo()->GetIndex();
 
 	// Check for suicide
@@ -184,12 +196,6 @@ void CHudDeathNoticePanel::AddItem(int killerId, int victimId, const char *kille
 void CHudDeathNoticePanel::ApplySettings(KeyValues *inResourceData)
 {
 	BaseClass::ApplySettings(inResourceData);
-
-	int cornerWide, cornerTall;
-	GetCornerTextureSize(cornerWide, cornerTall);
-
-	int minRowTall = std::max(cornerTall * 2, SKULL_SPRITE_HEIGHT);
-	m_iRowTall = std::max(m_iRowHeight, minRowTall);
 }
 
 void CHudDeathNoticePanel::PaintBackground()

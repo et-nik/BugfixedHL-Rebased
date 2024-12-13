@@ -50,12 +50,15 @@ extern void CopyToBodyQue(entvars_t *pev);
 extern Vector VecBModelOrigin(entvars_t *pevBModel);
 extern edict_t *EntSelectSpawnPoint(CBasePlayer *pPlayer);
 
+extern bool IsBustingGame();
+
 // the world node graph
 extern CGraph WorldGraph;
 
 ConVar mp_teamspawn("mp_teamspawn", "0", FCVAR_SERVER, "When teamplay is enabled, players will be spawned on team spawns if the map has them");
 ConVar mp_weaponbox_time("mp_weaponbox_time", "120", FCVAR_SERVER, "Dead player's weapons will stay for this many seconds, 0 disables them, -1 forever");
 ConVar mp_weapondrop_time("mp_weapondrop_time", "0", FCVAR_SERVER, "Manually dropped weapons will stay for this many seconds, 0 forever");
+ConVar mp_spawntype("mp_spawntype", "0", FCVAR_SERVER, "Spawn point selection method:\n0 - HL25\n1 - Pre-HL25\n2 - Random with item accounting");
 
 #define TRAIN_ACTIVE  0x80
 #define TRAIN_NEW     0xc0
@@ -68,6 +71,24 @@ ConVar mp_weapondrop_time("mp_weapondrop_time", "0", FCVAR_SERVER, "Manually dro
 
 #define FLASH_DRAIN_TIME  1.2 //100 units/3 minutes
 #define FLASH_CHARGE_TIME 0.2 // 100 units/20 seconds  (seconds per unit)
+
+constexpr int HalfPlayerHeight = 36;
+constexpr int HeightTolerance = 20;
+constexpr float ItemSearchRadius = 512;
+
+enum class SpawnPointValidity
+{
+	NonValid,
+	Valid,
+	HasPlayers,
+};
+
+struct SpotInfo
+{
+	CBaseEntity *pSpot = nullptr;
+	float flItemsWeight = 0.0f;
+	SpawnPointValidity nValidity = SpawnPointValidity::NonValid;
+};
 
 // Global Savedata for player
 TYPEDESCRIPTION CBasePlayer::m_playerSaveData[] = {
@@ -194,6 +215,7 @@ int gmsgAllowSpec = 0;
 int gmsgViewMode = 0;
 int gmsgVGUIMenu = 0;
 int gmsgStatusIcon = 0;
+int gmsgFog = 0;
 
 const char *const gCustomMessages[] = {
 	"IconInfo",
@@ -263,6 +285,8 @@ void LinkUserMessages(void)
 	{
 		REG_USER_MSG(gCustomMessages[i], 0);
 	}
+
+	gmsgFog = REG_USER_MSG("Fog", 7);
 }
 
 LINK_ENTITY_TO_CLASS(player, CBasePlayer);
@@ -718,7 +742,7 @@ void CBasePlayer::PackDeadPlayerItems(void)
 	iWeaponRules = g_pGameRules->DeadPlayerWeapons(this);
 	iAmmoRules = g_pGameRules->DeadPlayerAmmo(this);
 
-	if (iWeaponRules == GR_PLR_DROP_GUN_NO && iAmmoRules == GR_PLR_DROP_AMMO_NO)
+	if (mp_weaponbox_time.GetFloat() == 0 || (iWeaponRules == GR_PLR_DROP_GUN_NO && iAmmoRules == GR_PLR_DROP_AMMO_NO))
 	{
 		// nothing to pack. Remove the weapons and return. Don't call create on the box!
 		RemoveAllItems(TRUE);
@@ -740,8 +764,20 @@ void CBasePlayer::PackDeadPlayerItems(void)
 				case GR_PLR_DROP_GUN_ACTIVE:
 					if (m_pActiveItem && pPlayerItem == m_pActiveItem)
 					{
+						CBasePlayerWeapon *pWeapon = (CBasePlayerWeapon *)pPlayerItem;
+						int nIndex = iPW++;
+
 						// this is the active item. Pack it.
-						rgpPackWeapons[iPW++] = (CBasePlayerWeapon *)pPlayerItem;
+						rgpPackWeapons[nIndex] = pWeapon;
+
+						//Reload the weapon before dropping it if we have ammo
+						int j = min(pWeapon->iMaxClip() - pWeapon->m_iClip, m_rgAmmo[pWeapon->m_iPrimaryAmmoType]);
+
+						// Add them to the clip
+						pWeapon->m_iClip += j;
+						m_rgAmmo[pWeapon->m_iPrimaryAmmoType] -= j;
+
+						TabulateAmmo();
 					}
 					break;
 
@@ -798,30 +834,81 @@ void CBasePlayer::PackDeadPlayerItems(void)
 	pWeaponBox->pev->angles.x = 0; // don't let weaponbox tilt.
 	pWeaponBox->pev->angles.z = 0;
 
-	pWeaponBox->SetThink(&CWeaponBox::Kill);
-	pWeaponBox->pev->nextthink = gpGlobals->time + 120;
+	if (mp_weaponbox_time.GetFloat() > 0)
+	{
+		pWeaponBox->SetThink(&CWeaponBox::Kill);
+		pWeaponBox->pev->nextthink = gpGlobals->time + mp_weaponbox_time.GetFloat();
+	}
+	else
+	{
+		// Stays forever
+		pWeaponBox->pev->nextthink = 0;
+	}
 
 	// back these two lists up to their first elements
 	iPA = 0;
 	iPW = 0;
 
-	// pack the ammo
-	while (iPackAmmo[iPA] != -1)
+	if (IsBustingGame())
 	{
-		pWeaponBox->PackAmmo(MAKE_STRING(CBasePlayerItem::AmmoInfoArray[iPackAmmo[iPA]].pszName), m_rgAmmo[iPackAmmo[iPA]]);
-		iPA++;
-	}
+		if (HasNamedPlayerItem("weapon_egon"))
+		{
+			for (i = 0; i < MAX_ITEM_TYPES; i++)
+			{
+				CBasePlayerItem *pItem = m_rgpPlayerItems[i];
 
-	// now pack all of the items in the lists
-	while (rgpPackWeapons[iPW])
+				if (pItem)
+				{
+					if (!strcmp("weapon_egon", STRING(pItem->pev->classname)))
+					{
+						pWeaponBox->PackWeapon(pItem);
+
+						SET_MODEL(ENT(pWeaponBox->pev), "models/w_egon.mdl");
+
+						pWeaponBox->pev->velocity = Vector(0, 0, 0);
+						pWeaponBox->pev->renderfx = kRenderFxGlowShell;
+						pWeaponBox->pev->renderamt = 25;
+						pWeaponBox->pev->rendercolor = Vector(0, 75, 250);
+
+						break;
+					}
+				}
+			}
+		}
+	}
+	else
 	{
-		// weapon unhooked from the player. Pack it into der box.
-		pWeaponBox->PackWeapon(rgpPackWeapons[iPW]);
+		bool bPackItems = TRUE;
 
-		iPW++;
+		if (iAmmoRules == GR_PLR_DROP_AMMO_ACTIVE && iWeaponRules == GR_PLR_DROP_GUN_ACTIVE)
+		{
+			if (rgpPackWeapons[0] && FClassnameIs(rgpPackWeapons[0]->pev, "weapon_satchel") && (iPackAmmo[0] == -1 || (m_rgAmmo[iPackAmmo[0]] == 0)))
+			{
+				bPackItems = FALSE;
+			}
+		}
+
+		if (bPackItems)
+		{
+			// pack the ammo
+			while (iPackAmmo[iPA] != -1)
+			{
+				pWeaponBox->PackAmmo(MAKE_STRING(CBasePlayerItem::AmmoInfoArray[iPackAmmo[iPA]].pszName), m_rgAmmo[iPackAmmo[iPA]]);
+				iPA++;
+			}
+
+			// now pack all of the items in the lists
+			while (rgpPackWeapons[iPW])
+			{
+				// weapon unhooked from the player. Pack it into der box.
+				pWeaponBox->PackWeapon(rgpPackWeapons[iPW]);
+
+				iPW++;
+			}
+		}
+
+		pWeaponBox->pev->velocity = pev->velocity * 1.2; // weaponbox has player's velocity, then some.
 	}
-
-	pWeaponBox->pev->velocity = pev->velocity * 1.2; // weaponbox has player's velocity, then some.
 
 	RemoveAllItems(TRUE); // now strip off everything that wasn't handled by the code above.
 }
@@ -910,7 +997,7 @@ void CBasePlayer::Killed(entvars_t *pevAttacker, int iGib)
 
 	SetAnimation(PLAYER_DIE);
 
-	m_iRespawnFrames = 0;
+	m_flRespawnTimer = 0;
 	m_flDeathAnimationStartTime = gpGlobals->time;
 
 	pev->modelindex = g_ulModelIndexPlayer; // don't use eyes
@@ -943,6 +1030,12 @@ void CBasePlayer::Killed(entvars_t *pevAttacker, int iGib)
 	MESSAGE_BEGIN(MSG_ONE, gmsgSetFOV, NULL, pev);
 	WRITE_BYTE(0);
 	MESSAGE_END();
+
+	// Adrian: always make the players non-solid in multiplayer when they die
+	if (g_pGameRules->IsMultiplayer())
+	{
+		pev->solid = SOLID_NOT;
+	}
 
 	// UNDONE: Put this in, but add FFADE_PERMANENT and make fade time 8.8 instead of 4.12
 	// UTIL_ScreenFade( edict(), Vector(128,0,0), 6, 15, 255, FFADE_OUT | FFADE_MODULATE );
@@ -1054,9 +1147,9 @@ void CBasePlayer::SetAnimation(PLAYER_ANIM playerAnim)
 
 	case ACT_RANGE_ATTACK1:
 		if (FBitSet(pev->flags, FL_DUCKING)) // crouching
-			strcpy(szAnim, "crouch_shoot_");
+			UTIL_strcpy(szAnim, "crouch_shoot_");
 		else
-			strcpy(szAnim, "ref_shoot_");
+			UTIL_strcpy(szAnim, "ref_shoot_");
 		strcat(szAnim, m_szAnimExtention);
 		animDesired = LookupSequence(szAnim);
 		if (animDesired == -1)
@@ -1082,9 +1175,9 @@ void CBasePlayer::SetAnimation(PLAYER_ANIM playerAnim)
 		if (m_Activity != ACT_RANGE_ATTACK1 || m_fSequenceFinished)
 		{
 			if (FBitSet(pev->flags, FL_DUCKING)) // crouching
-				strcpy(szAnim, "crouch_aim_");
+				UTIL_strcpy(szAnim, "crouch_aim_");
 			else
-				strcpy(szAnim, "ref_aim_");
+				UTIL_strcpy(szAnim, "ref_aim_");
 			strcat(szAnim, m_szAnimExtention);
 			animDesired = LookupSequence(szAnim);
 			if (animDesired == -1)
@@ -1297,7 +1390,7 @@ void CBasePlayer::PlayerDeathThink(void)
 		if (flForward <= 0)
 			pev->velocity = g_vecZero;
 		else
-			pev->velocity = flForward * pev->velocity.Normalize();
+			pev->velocity = flForward * pev->velocity.Normalized();
 	}
 
 	if (HasWeapons())
@@ -1317,8 +1410,8 @@ void CBasePlayer::PlayerDeathThink(void)
 
 	if (mp_respawn_fix.value <= 0)
 	{
-		m_iRespawnFrames++;
-		if (m_iRespawnFrames < 120)
+		m_flRespawnTimer += gpGlobals->frametime;
+		if (m_flRespawnTimer < 4.0f) // 120 frames at 30fps -- animations should be no longer than this
 			return;
 	}
 	else
@@ -1332,13 +1425,22 @@ void CBasePlayer::PlayerDeathThink(void)
 	if (pev->frame < 255)
 		pev->frame = 255;
 
+	if (pev->deadflag == DEAD_DYING)
+	{
+		//Once we finish animating, if we're in multiplayer just make a copy of our body right away.
+		if (m_fSequenceFinished && g_pGameRules->IsMultiplayer() && pev->movetype == MOVETYPE_NONE)
+		{
+			CopyToBodyQue(pev);
+			pev->modelindex = 0;
+		}
+
+		pev->deadflag = DEAD_DEAD;
+	}
+
 	// once we're done animating our death and we're on the ground, we want to set movetype to None so our dead body won't do collisions and stuff anymore
 	// this prevents a bug where the dead body would go to a player's head if he walked over it while the dead player was clicking their button to respawn
 	if (pev->movetype != MOVETYPE_NONE && FBitSet(pev->flags, FL_ONGROUND))
 		pev->movetype = MOVETYPE_NONE;
-
-	if (pev->deadflag == DEAD_DYING)
-		pev->deadflag = DEAD_DEAD;
 
 	StopAnimation();
 
@@ -1382,7 +1484,7 @@ void CBasePlayer::PlayerDeathThink(void)
 		return;
 
 	pev->button = 0;
-	m_iRespawnFrames = 0;
+	m_flRespawnTimer = 0.0f;
 	m_flDeathAnimationStartTime = 0;
 
 	//ALERT(at_console, "Respawn\n");
@@ -1590,6 +1692,9 @@ void CBasePlayer::PlayerUse(void)
 			{
 				m_afPhysicsFlags &= ~PFLAG_ONTRAIN;
 				m_iTrain = TRAIN_NEW | TRAIN_OFF;
+				CBaseEntity *pTrain = CBaseEntity::Instance(pev->groundentity);
+				if (pTrain && (pTrain->Classify() == CLASS_VEHICLE))
+					static_cast<CFuncVehicle *>(pTrain)->m_pDriver = NULL;
 				return;
 			}
 			else
@@ -1601,7 +1706,15 @@ void CBasePlayer::PlayerUse(void)
 					m_afPhysicsFlags |= PFLAG_ONTRAIN;
 					m_iTrain = TrainSpeed(pTrain->pev->speed, pTrain->pev->impulse);
 					m_iTrain |= TRAIN_NEW;
-					EMIT_SOUND(ENT(pev), CHAN_ITEM, "plats/train_use1.wav", 0.8, ATTN_NORM);
+					if (pTrain->Classify() == CLASS_VEHICLE)
+					{
+						EMIT_SOUND(ENT(pev), CHAN_ITEM, "plats/vehicle_ignition.wav", 0.8, ATTN_NORM);
+						static_cast<CFuncVehicle *>(pTrain)->m_pDriver = this;
+					}
+					else
+					{
+						EMIT_SOUND(ENT(pev), CHAN_ITEM, "plats/train_use1.wav", 0.8, ATTN_NORM);
+					}
 					return;
 				}
 			}
@@ -1715,6 +1828,20 @@ void CBasePlayer::Jump()
 	{
 		pev->velocity = pev->velocity + pev->basevelocity;
 	}
+
+	// JoshA: CS behaviour does this for tracktrain + train as well,
+	// but let's just do this for func_vehicle to avoid breaking existing content.
+	//
+	// If you're standing on a moving train... then add the velocity of the train to yours.
+	if (pevGround &&
+		/*(
+			!strcmp( "func_tracktrain", STRING(pevGround->classname)) ||
+			!strcmp( "func_train", STRING(pevGround->classname))
+		) ||*/
+	    !strcmp("func_vehicle", STRING(pevGround->classname)))
+	{
+		pev->velocity = pev->velocity + pevGround->velocity;
+	}
 }
 
 // This is a glorious hack to find free space when you've crouched into some solid space
@@ -1773,13 +1900,7 @@ void CBasePlayer::AddPoints(int score, BOOL bAllowNegativeScore)
 
 	pev->frags += score;
 
-	MESSAGE_BEGIN(MSG_ALL, gmsgScoreInfo);
-	WRITE_BYTE(ENTINDEX(edict()));
-	WRITE_SHORT(pev->frags);
-	WRITE_SHORT(m_iDeaths);
-	WRITE_SHORT(0);
-	WRITE_SHORT(g_pGameRules->GetTeamIndex(m_szTeamName) + 1);
-	MESSAGE_END();
+	SendScoreInfo();
 }
 
 void CBasePlayer::AddPointsToTeam(int score, BOOL bAllowNegativeScore)
@@ -1814,8 +1935,8 @@ void CBasePlayer::UpdateStatusBar()
 	char sbuf1[SBAR_STRING_SIZE];
 
 	memset(newSBarState, 0, sizeof(newSBarState));
-	strcpy(sbuf0, m_SbarString0);
-	strcpy(sbuf1, m_SbarString1);
+	UTIL_strcpy(sbuf0, m_SbarString0);
+	UTIL_strcpy(sbuf1, m_SbarString1);
 
 	// Find an ID Target
 	TraceResult tr;
@@ -1834,7 +1955,7 @@ void CBasePlayer::UpdateStatusBar()
 			if (pEntity->Classify() == CLASS_PLAYER)
 			{
 				newSBarState[SBAR_ID_TARGETNAME] = ENTINDEX(pEntity->edict());
-				strcpy(sbuf1, "1 %p1\n2 Health: %i2%%\n3 Armor: %i3%%");
+				UTIL_strcpy(sbuf1, "1 %p1\n2 Health: %i2%%\n3 Armor: %i3%%");
 
 				// allies and medics get to see the targets health
 				if (g_pGameRules->PlayerRelationship(this, pEntity) == GR_TEAMMATE)
@@ -1864,7 +1985,7 @@ void CBasePlayer::UpdateStatusBar()
 		WRITE_STRING(sbuf0);
 		MESSAGE_END();
 
-		strcpy(m_SbarString0, sbuf0);
+		UTIL_strcpy(m_SbarString0, sbuf0);
 
 		// make sure everything's resent
 		bForceResend = TRUE;
@@ -1877,7 +1998,7 @@ void CBasePlayer::UpdateStatusBar()
 		WRITE_STRING(sbuf1);
 		MESSAGE_END();
 
-		strcpy(m_SbarString1, sbuf1);
+		UTIL_strcpy(m_SbarString1, sbuf1);
 
 		// make sure everything's resent
 		bForceResend = TRUE;
@@ -1996,10 +2117,15 @@ void CBasePlayer::PreThink(void)
 				//ALERT( at_error, "In train mode with no train!\n" );
 				m_afPhysicsFlags &= ~PFLAG_ONTRAIN;
 				m_iTrain = TRAIN_NEW | TRAIN_OFF;
+				if (pTrain->Classify() == CLASS_VEHICLE)
+					static_cast<CFuncVehicle *>(pTrain)->m_pDriver = NULL;
 				return;
 			}
 		}
-		else if (!FBitSet(pev->flags, FL_ONGROUND) || FBitSet(pTrain->pev->spawnflags, SF_TRACKTRAIN_NOCONTROL) || (pev->button & (IN_MOVELEFT | IN_MOVERIGHT)))
+		else if (
+			!FBitSet(pev->flags, FL_ONGROUND) ||
+			FBitSet(pTrain->pev->spawnflags, SF_TRACKTRAIN_NOCONTROL) ||
+			((pev->button & (IN_MOVELEFT | IN_MOVERIGHT)) && pTrain->Classify() != CLASS_VEHICLE))
 		{
 			// Turn off the train if you jump, strafe, or the train controls go dead
 			m_afPhysicsFlags &= ~PFLAG_ONTRAIN;
@@ -2009,15 +2135,42 @@ void CBasePlayer::PreThink(void)
 
 		pev->velocity = g_vecZero;
 		vel = 0;
-		if (m_afButtonPressed & IN_FORWARD)
+
+		if (pTrain->Classify() == CLASS_VEHICLE)
 		{
-			vel = 1;
-			pTrain->Use(this, this, USE_SET, (float)vel);
+			if (pev->button & IN_FORWARD)
+			{
+				vel = 1;
+				pTrain->Use(this, this, USE_SET, (float)vel);
+			}
+			if (pev->button & IN_BACK)
+			{
+				vel = -1;
+				pTrain->Use(this, this, USE_SET, (float)vel);
+			}
+			if (pev->button & IN_MOVELEFT)
+			{
+				vel = 20;
+				pTrain->Use(this, this, USE_SET, (float)vel);
+			}
+			if (pev->button & IN_MOVERIGHT)
+			{
+				vel = 30;
+				pTrain->Use(this, this, USE_SET, (float)vel);
+			}
 		}
-		else if (m_afButtonPressed & IN_BACK)
+		else
 		{
-			vel = -1;
-			pTrain->Use(this, this, USE_SET, (float)vel);
+			if (m_afButtonPressed & IN_FORWARD)
+			{
+				vel = 1;
+				pTrain->Use(this, this, USE_SET, (float)vel);
+			}
+			else if (m_afButtonPressed & IN_BACK)
+			{
+				vel = -1;
+				pTrain->Use(this, this, USE_SET, (float)vel);
+			}
 		}
 
 		if (vel)
@@ -2376,7 +2529,7 @@ void CBasePlayer::CheckSuitUpdate()
 				// play sentence number
 
 				char sentence[CBSENTENCENAME_MAX + 1];
-				strcpy(sentence, "!");
+				UTIL_strcpy(sentence, "!");
 				strcat(sentence, gszallsentencenames[isentence]);
 				EMIT_SOUND_SUIT(ENT(pev), sentence);
 			}
@@ -2793,27 +2946,364 @@ pt_end:
 }
 
 // checks if the spot is clear of players
-BOOL IsSpawnPointValid(CBaseEntity *pPlayer, CBaseEntity *pSpot)
+static SpawnPointValidity IsSpawnPointValid(CBaseEntity *pPlayer, CBaseEntity *pSpot)
 {
 	CBaseEntity *ent = NULL;
 
-	if (!pSpot->IsTriggered(pPlayer))
+	if (pSpot->pev->origin == Vector(0, 0, 0))
 	{
-		return FALSE;
+		return SpawnPointValidity::NonValid;
 	}
 
-	while ((ent = UTIL_FindEntityInSphere(ent, pSpot->pev->origin, 128)) != NULL)
+	if (!pSpot->IsTriggered(pPlayer))
+	{
+		return SpawnPointValidity::NonValid;
+	}
+
+	while ((ent = UTIL_FindEntityInSphere(ent, pSpot->pev->origin, HalfPlayerHeight * 4)) != NULL)
 	{
 		// if ent is a client, don't spawn on 'em
 		if (ent->IsPlayer() && ent != pPlayer)
-			return FALSE;
+			return SpawnPointValidity::HasPlayers;
 	}
 
-	return TRUE;
+	return SpawnPointValidity::Valid;
 }
 
 DLL_GLOBAL CBaseEntity *g_pLastSpawn;
 inline int FNullEnt(CBaseEntity *ent) { return (ent == NULL) || FNullEnt(ent->edict()); }
+
+static float GetItemWeight(CBasePlayerItem *item)
+{
+	ItemInfo p;
+	if (item->GetItemInfo(&p) && p.iWeight > 0)
+	{
+		return (float)p.iWeight / 10;
+	}
+	return 1.0f;
+}
+
+static bool IsSameFloor(Vector spot, Vector item)
+{
+	return (spot.z - HalfPlayerHeight - HeightTolerance <= item.z) && (spot.z + HalfPlayerHeight + HeightTolerance >= item.z);
+}
+
+static float CountEntitesInSphere(Vector point)
+{
+	float weight = 0;
+	CBaseEntity *ent = nullptr;
+
+	while ((ent = UTIL_FindEntityInSphere(ent, point, ItemSearchRadius)))
+	{
+		CBasePlayerItem *item = dynamic_cast<CBasePlayerItem *>(ent);
+
+		if (!item || (item->pev->effects & EF_NODRAW) == EF_NODRAW)
+			continue;
+
+		weight += GetItemWeight(item);
+
+		if (IsSameFloor(point, item->pev->origin))
+			weight += 2.0f;
+	}
+
+	return weight;
+}
+
+static int SortSpots(SpotInfo spotInfos[], int spotsCount)
+{
+	int validSpotsCount = 0;
+	SpotInfo replacement;
+	for (int i = 0; i < spotsCount; i++)
+	{
+		// Search for max weight separately for valid and non valid spots
+		float maxWeightForValid = 0;
+		int maxWeightIndexForValid = -1;
+		float maxWeightForNonValid = 0;
+		int maxWeightIndexForNonValid = -1;
+
+		for (int j = i + 1; j < spotsCount; j++)
+		{
+			if (spotInfos[j].nValidity == SpawnPointValidity::Valid)
+			{
+				if (spotInfos[j].flItemsWeight >= maxWeightForValid)
+				{
+					maxWeightForValid = spotInfos[j].flItemsWeight;
+					maxWeightIndexForValid = j;
+				}
+			}
+			else
+			{
+				if (spotInfos[j].flItemsWeight >= maxWeightForNonValid)
+				{
+					maxWeightForNonValid = spotInfos[j].flItemsWeight;
+					maxWeightIndexForNonValid = j;
+				}
+			}
+		}
+
+		if (maxWeightIndexForValid < 0 && maxWeightIndexForNonValid < 0)
+		{
+			if (spotInfos[i].nValidity == SpawnPointValidity::Valid)
+				validSpotsCount++;
+			break;
+		}
+
+		// Select spot to exchange, valid ones first
+		int replaceIndex = -1;
+
+		if (maxWeightIndexForValid > 0)
+		{
+			validSpotsCount = i + 1;
+			if (spotInfos[i].nValidity != SpawnPointValidity::Valid || spotInfos[i].flItemsWeight < maxWeightForValid)
+				replaceIndex = maxWeightIndexForValid;
+		}
+		else if (maxWeightIndexForNonValid > 0)
+		{
+			if (spotInfos[i].flItemsWeight < maxWeightForNonValid)
+				replaceIndex = maxWeightIndexForNonValid;
+		}
+
+		// Exchange spots
+		if (replaceIndex > 0)
+		{
+			replacement = spotInfos[i];
+			spotInfos[i] = spotInfos[replaceIndex];
+			spotInfos[replaceIndex] = replacement;
+		}
+	}
+
+	return validSpotsCount;
+}
+
+static void ClearSpawn(CBaseEntity *pSpot, edict_t *player)
+{
+	CBaseEntity *ent = nullptr;
+
+	while ((ent = UTIL_FindEntityInSphere(ent, pSpot->pev->origin, 128)))
+	{
+		// if ent is a client, kill em (unless they are ourselves)
+		if (ent->IsPlayer() && !(ent->edict() == player))
+			ent->TakeDamage(VARS(INDEXENT(0)), VARS(INDEXENT(0)), 300, DMG_GENERIC);
+	}
+}
+
+static CBaseEntity *EntSelectSpawnPointOriginal(CBasePlayer *pPlayer)
+{
+	CBaseEntity *pSpot;
+	edict_t *player;
+
+	player = pPlayer->edict();
+
+	// choose a info_player_deathmatch point
+	
+	pSpot = g_pLastSpawn;
+	// Randomize the start spot
+	for (int i = RANDOM_LONG(1, 5); i > 0; i--)
+		pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
+
+	if (FNullEnt(pSpot)) // skip over the null point
+		pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
+
+	if (g_pGameRules->IsTeamplay() && mp_teamspawn.GetBool())
+	{
+		// try to find team spawn
+		CBaseEntity *pFirstSpot = pSpot;
+
+		do
+		{
+			if (pSpot)
+			{
+				if (g_pGameRules->GetTeamIndex(pPlayer->TeamID()) != pSpot->pev->team)
+				{
+					pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
+					continue;
+				}
+
+				if (IsSpawnPointValid(pPlayer, pSpot) == SpawnPointValidity::Valid && pSpot->pev->origin != Vector(0, 0, 0))
+				{
+					return pSpot;
+				}
+			}
+
+			pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
+		} while (pSpot != pFirstSpot);
+	}
+
+	CBaseEntity *pFirstSpot = pSpot;
+
+	do
+	{
+		if (pSpot)
+		{
+			if (IsSpawnPointValid(pPlayer, pSpot) == SpawnPointValidity::Valid && pSpot->pev->origin != Vector(0, 0, 0))
+			{
+				return pSpot;
+			}
+		}
+
+		pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
+	} while (pSpot != pFirstSpot);
+
+	// we haven't found a place to spawn yet,  so kill any guy at the first spawn point and spawn there
+	if (!FNullEnt(pSpot))
+	{
+		ClearSpawn(pSpot, player);
+		return pSpot;
+	}
+
+	return nullptr;
+}
+
+static CBaseEntity *EntSelectSpawnPointHL25(CBaseEntity *pPlayer)
+{
+	CBaseEntity *pSpot;
+	edict_t *player;
+
+	int nNumRandomSpawnsToTry = 10;
+
+	player = pPlayer->edict();
+
+	// choose a info_player_deathmatch point
+	if (NULL == g_pLastSpawn)
+	{
+		int nNumSpawnPoints = 0;
+		CBaseEntity *pEnt = UTIL_FindEntityByClassname(NULL, "info_player_deathmatch");
+		while (NULL != pEnt)
+		{
+			nNumSpawnPoints++;
+			pEnt = UTIL_FindEntityByClassname(pEnt, "info_player_deathmatch");
+		}
+		nNumRandomSpawnsToTry = nNumSpawnPoints;
+	}
+
+	pSpot = g_pLastSpawn;
+	// Randomize the start spot
+	for (int i = RANDOM_LONG(1, nNumRandomSpawnsToTry - 1); i > 0; i--)
+		pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
+	if (FNullEnt(pSpot)) // skip over the null point
+		pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
+
+	CBaseEntity *pFirstSpot = pSpot;
+
+	if (g_pGameRules->IsTeamplay() && mp_teamspawn.GetBool())
+	{
+		// try to find team spawn
+		CBaseEntity *pFirstSpot = pSpot;
+
+		do
+		{
+			if (pSpot)
+			{
+				// check if pSpot is valid
+				if (IsSpawnPointValid(pPlayer, pSpot) == SpawnPointValidity::Valid &&
+					g_pGameRules->GetTeamIndex(pPlayer->TeamID()) != pSpot->pev->team)
+				{
+					if (pSpot->pev->origin == Vector(0, 0, 0))
+					{
+						pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
+						continue;
+					}
+
+					// if so, go to pSpot
+					return pSpot;
+				}
+			}
+			// increment pSpot
+			pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
+		} while (pSpot != pFirstSpot); // loop if we're not back to the start
+	}
+
+	do
+	{
+		if (pSpot)
+		{
+			// check if pSpot is valid
+			if (IsSpawnPointValid(pPlayer, pSpot) == SpawnPointValidity::Valid)
+			{
+				if (pSpot->pev->origin == Vector(0, 0, 0))
+				{
+					pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
+					continue;
+				}
+
+				// if so, go to pSpot
+				return pSpot;
+			}
+		}
+		// increment pSpot
+		pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
+	} while (pSpot != pFirstSpot); // loop if we're not back to the start
+
+	// we haven't found a place to spawn yet,  so kill any guy at the first spawn point and spawn there
+	if (!FNullEnt(pSpot))
+	{
+		ClearSpawn(pSpot, player);
+		return pSpot;
+	}
+
+	return nullptr;
+}
+
+static CBaseEntity *EntSelectSpawnPointFair(CBaseEntity *pPlayer)
+{
+	constexpr int MAX_SPOTS = 100;
+	SpotInfo spotInfos[MAX_SPOTS];
+
+	// New way to find spawn spot: count items around
+	int spotsCount = 0;
+
+	// Find all spawn spots
+	CBaseEntity *pSpot = nullptr;
+
+	if (g_pGameRules->IsTeamplay() && mp_teamspawn.GetBool())
+	{
+		// try to find team spawn
+		while ((pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch")))
+		{
+			if (g_pGameRules->GetTeamIndex(pPlayer->TeamID()) != pSpot->pev->team)
+				continue;
+
+			spotInfos[spotsCount].pSpot = pSpot;
+			spotInfos[spotsCount].flItemsWeight = CountEntitesInSphere(pSpot->pev->origin);
+			spotInfos[spotsCount].nValidity = IsSpawnPointValid(pPlayer, pSpot);
+			spotsCount++;
+
+			if (spotsCount == MAX_SPOTS)
+				break;
+		}
+	}
+
+	if (spotsCount == 0)
+	{
+		// Not using team spawns or not found any
+		while ((pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch")))
+		{
+			spotInfos[spotsCount].pSpot = pSpot;
+			spotInfos[spotsCount].flItemsWeight = CountEntitesInSphere(pSpot->pev->origin);
+			spotInfos[spotsCount].nValidity = IsSpawnPointValid(pPlayer, pSpot);
+			spotsCount++;
+
+			if (spotsCount == MAX_SPOTS)
+				break;
+		}
+	}
+
+	// Sort them
+	int validSpots = SortSpots(spotInfos, spotsCount);
+	int limit = validSpots;
+
+	if (limit == 0)
+		limit = spotsCount;
+	else if (limit > 10 && (rand() % 3) != 0)
+		limit = 10;
+
+	int take = rand() % limit;
+
+	if (spotInfos[take].nValidity == SpawnPointValidity::HasPlayers)
+		ClearSpawn(spotInfos[take].pSpot, pPlayer->edict());
+
+	return spotInfos[take].pSpot;
+}
 
 /*
 ============
@@ -2824,102 +3314,47 @@ Returns the entity to spawn at
 USES AND SETS GLOBAL g_pLastSpawn
 ============
 */
-edict_t *EntSelectSpawnPoint(CBaseEntity *pPlayer)
+edict_t* EntSelectSpawnPoint(CBasePlayer* pPlayer)
 {
-	CBaseEntity *pSpot;
-	edict_t *player;
+	CBaseEntity *pSpot = nullptr;
 
-	player = pPlayer->edict();
-
-	// choose a info_player_deathmatch point
 	if (g_pGameRules->IsCoOp())
 	{
 		pSpot = UTIL_FindEntityByClassname(g_pLastSpawn, "info_player_coop");
-		if (!FNullEnt(pSpot))
-			goto ReturnSpot;
-		pSpot = UTIL_FindEntityByClassname(g_pLastSpawn, "info_player_start");
-		if (!FNullEnt(pSpot))
-			goto ReturnSpot;
+
+		if (!pSpot)
+			pSpot = UTIL_FindEntityByClassname(g_pLastSpawn, "info_player_start");
 	}
 	else if (g_pGameRules->IsDeathmatch())
 	{
-		pSpot = g_pLastSpawn;
-		// Randomize the start spot
-		for (int i = RANDOM_LONG(1, 5); i > 0; i--)
-			pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
-
-		if (FNullEnt(pSpot)) // skip over the null point
-			pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
-
-		if (g_pGameRules->IsTeamplay() && mp_teamspawn.GetBool())
+		switch (mp_spawntype.GetInt())
 		{
-			// try to find team spawn
-			CBaseEntity *pFirstSpot = pSpot;
-
-			do
-			{
-				if (pSpot)
-				{
-					if (g_pGameRules->GetTeamIndex(pPlayer->TeamID()) != pSpot->pev->team)
-					{
-						pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
-						continue;
-					}
-
-					if (IsSpawnPointValid(pPlayer, pSpot) && pSpot->pev->origin != Vector(0, 0, 0))
-					{
-						goto ReturnSpot;
-					}
-				}
-
-				pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
-			} while (pSpot != pFirstSpot);
-		}
-
-		CBaseEntity *pFirstSpot = pSpot;
-
-		do
-		{
-			if (pSpot)
-			{
-				if (IsSpawnPointValid(pPlayer, pSpot) && pSpot->pev->origin != Vector(0, 0, 0))
-				{
-					goto ReturnSpot;
-				}
-			}
-
-			pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
-		} while (pSpot != pFirstSpot);
-
-		// we haven't found a place to spawn yet,  so kill any guy at the first spawn point and spawn there
-		if (!FNullEnt(pSpot))
-		{
-			CBaseEntity *ent = NULL;
-			while ((ent = UTIL_FindEntityInSphere(ent, pSpot->pev->origin, 128)) != NULL)
-			{
-				// if ent is a client, kill em (unless they are ourselves)
-				if (ent->IsPlayer() && !(ent->edict() == player))
-					ent->TakeDamage(VARS(INDEXENT(0)), VARS(INDEXENT(0)), 300, DMG_GENERIC);
-			}
-			goto ReturnSpot;
+		case 0:
+		default:
+			pSpot = EntSelectSpawnPointHL25(pPlayer);
+			break;
+		case 1:
+			pSpot = EntSelectSpawnPointOriginal(pPlayer);
+			break;
+		case 2:
+			pSpot = EntSelectSpawnPointFair(pPlayer);
+			break;
 		}
 	}
 
-	// If startspot is set, (re)spawn there.
-	if (FStringNull(gpGlobals->startspot) || !strlen(STRING(gpGlobals->startspot)))
+	if (!pSpot)
 	{
-		pSpot = UTIL_FindEntityByClassname(NULL, "info_player_start");
-		if (!FNullEnt(pSpot))
-			goto ReturnSpot;
-	}
-	else
-	{
-		pSpot = UTIL_FindEntityByTargetname(NULL, STRING(gpGlobals->startspot));
-		if (!FNullEnt(pSpot))
-			goto ReturnSpot;
+		// If startspot is set, (re)spawn there.
+		if (FStringNull(gpGlobals->startspot) || !strlen(STRING(gpGlobals->startspot)))
+		{
+			pSpot = UTIL_FindEntityByClassname(NULL, "info_player_start");
+		}
+		else
+		{
+			pSpot = UTIL_FindEntityByTargetname(NULL, STRING(gpGlobals->startspot));
+		}
 	}
 
-ReturnSpot:
 	if (FNullEnt(pSpot))
 	{
 		ALERT(at_error, "PutClientInServer: no info_player_start on level");
@@ -2932,6 +3367,7 @@ ReturnSpot:
 
 void CBasePlayer::Spawn(void)
 {
+	m_flStartCharge = gpGlobals->time;
 	m_bConnected = TRUE;
 
 	pev->classname = MAKE_STRING("player");
@@ -3155,12 +3591,21 @@ int CBasePlayer::Restore(CRestore &restore)
 
 	RenewItems();
 
+	// Resync ammo data so you can reload - Solokiller
+	TabulateAmmo();
+
 #if defined(CLIENT_WEAPONS)
 	// HACK:	This variable is saved/restored in CBaseMonster as a time variable, but we're using it
 	//			as just a counter.  Ideally, this needs its own variable that's saved as a plain float.
 	//			Barring that, we clear it out here instead of using the incorrect restored time value.
 	m_flNextAttack = UTIL_WeaponTimeBase();
 #endif
+
+	// Force a flashlight update for the HUD
+	if (m_flFlashLightTime == 0)
+	{
+		m_flFlashLightTime = 1;
+	}
 
 	return status;
 }
@@ -3846,6 +4291,7 @@ int CBasePlayer::RemovePlayerItem(CBasePlayerItem *pItem)
 		pev->viewmodel = 0;
 		pev->weaponmodel = 0;
 	}
+
 	if (m_pLastItem == pItem)
 		m_pLastItem = NULL;
 
@@ -4087,6 +4533,24 @@ void CBasePlayer ::UpdateClientData(void)
 				MESSAGE_BEGIN(MSG_ONE, gmsgSpectator, NULL, pev);
 				WRITE_BYTE(ENTINDEX(plr->edict())); // index number of primary entity
 				WRITE_BYTE(1);
+				MESSAGE_END();
+			}
+
+			// Send fog message
+			CBaseEntity *pEntity = UTIL_FindEntityByClassname(nullptr, "env_fog");
+			if (pEntity)
+			{
+				CClientFog *pFog = static_cast<CClientFog *>(pEntity);
+
+				int r = clamp(int(pFog->pev->rendercolor[0]), 0, 255);
+				int g = clamp(int(pFog->pev->rendercolor[1]), 0, 255);
+				int b = clamp(int(pFog->pev->rendercolor[2]), 0, 255);
+
+				MESSAGE_BEGIN(MSG_ONE, gmsgFog, nullptr, pev);
+				WRITE_BYTE(r);
+				WRITE_BYTE(g);
+				WRITE_BYTE(b);
+				WRITE_FLOAT(pFog->m_fDensity);
 				MESSAGE_END();
 			}
 
@@ -4380,6 +4844,22 @@ void CBasePlayer ::UpdateClientData(void)
 	}
 }
 
+void CBasePlayer ::SetPrefsFromUserinfo(char *infobuffer)
+{
+	const char *pszKeyVal;
+
+	// Set autoswitch preference
+	pszKeyVal = g_engfuncs.pfnInfoKeyValue(infobuffer, "cl_autowepswitch");
+	if (FStrEq(pszKeyVal, ""))
+	{
+		m_iAutoWepSwitch = 1;
+	}
+	else
+	{
+		m_iAutoWepSwitch = atoi(pszKeyVal);
+	}
+}
+
 //=========================================================
 // FBecomeProne - Overridden for the player to set the proper
 // physics flags when a barnacle grabs player.
@@ -4511,7 +4991,7 @@ Vector CBasePlayer ::GetAutoaimVector(float flDelta)
 	// m_vecAutoAim = m_vecAutoAim * 0.99;
 
 	// Don't send across network if sv_aim is 0
-	if (g_psv_aim->value != 0)
+	if (g_psv_aim->value != 0 && (!g_psv_allow_autoaim || g_psv_allow_autoaim->value != 0))
 	{
 		if (m_vecAutoAim.x != m_lastx || m_vecAutoAim.y != m_lasty)
 		{
@@ -4537,7 +5017,7 @@ Vector CBasePlayer ::AutoaimDeflection(Vector &vecSrc, float flDist, float flDel
 	edict_t *bestent;
 	TraceResult tr;
 
-	if (g_psv_aim->value == 0)
+	if (g_psv_aim->value == 0 && (!g_psv_allow_autoaim || g_psv_allow_autoaim->value != 0))
 	{
 		m_fOnTarget = FALSE;
 		return g_vecZero;
@@ -4599,7 +5079,7 @@ Vector CBasePlayer ::AutoaimDeflection(Vector &vecSrc, float flDist, float flDel
 
 		center = pEntity->BodyTarget(vecSrc);
 
-		dir = (center - vecSrc).Normalize();
+		dir = (center - vecSrc).Normalized();
 
 		// make sure it's in front of the player
 		if (DotProduct(dir, gpGlobals->v_forward) < 0)
@@ -4743,6 +5223,17 @@ void CBasePlayer::DropPlayerItem(char *pszItemName)
 	pWeaponBox->PackWeapon(pWeapon);
 	pWeaponBox->pev->velocity = gpGlobals->v_forward * 300 + gpGlobals->v_forward * 100;
 
+	if (mp_weapondrop_time.GetFloat() > 0)
+	{
+		pWeaponBox->SetThink(&CWeaponBox::Kill);
+		pWeaponBox->pev->nextthink = gpGlobals->time + mp_weapondrop_time.GetFloat();
+	}
+	else
+	{
+		// Stays forever
+		pWeaponBox->pev->nextthink = 0;
+	}
+
 	// drop half of the ammo for this weapon.
 	int iAmmoIndex = GetAmmoIndex(pWeapon->pszAmmo1()); // ???
 
@@ -4802,6 +5293,33 @@ BOOL CBasePlayer::HasNamedPlayerItem(const char *pszItemName)
 			{
 				return TRUE;
 			}
+			pItem = pItem->m_pNext;
+		}
+	}
+
+	return FALSE;
+}
+
+//=========================================================
+// HasPlayerItemFromID
+// Just compare IDs, rather than classnames
+//=========================================================
+BOOL CBasePlayer::HasPlayerItemFromID(int nID)
+{
+	CBasePlayerItem *pItem;
+	int i;
+
+	for (i = 0; i < MAX_ITEM_TYPES; i++)
+	{
+		pItem = m_rgpPlayerItems[i];
+
+		while (pItem)
+		{
+			if (pItem->m_iId == nID)
+			{
+				return TRUE;
+			}
+
 			pItem = pItem->m_pNext;
 		}
 	}

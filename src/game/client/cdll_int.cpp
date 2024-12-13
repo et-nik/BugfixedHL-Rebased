@@ -43,6 +43,7 @@
 #include "results.h"
 #include "opengl.h"
 #include "engfuncs.h"
+#include "engine_builds.h"
 
 CHud gHUD;
 
@@ -105,6 +106,33 @@ void CheckWorkingDirectory()
 		GetSDL()->ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "Internal error", buf);
 	}
 #endif
+}
+
+//! Checks that the game is not running on an unsupported game build.
+//! @returns Whether the build is supported.
+static bool CheckForInvalidBuilds(int buildNumber)
+{
+	constexpr char TITLE[] = "BugfixedHL - Unsupported game";
+
+	if (buildNumber < ENGINE_BUILD_P48)
+	{
+		GetSDL()->ShowSimpleMessageBox(
+		    SDL_MESSAGEBOX_ERROR, TITLE,
+			"Your game is too old. Please, update to the latest Steam version.");
+		return false;
+	}
+
+	if (buildNumber >= ENGINE_BUILD_ANNIVERSARY_FIRST && buildNumber < ENGINE_BUILD_ANNIVERSARY_FIXED_INTERFACES)
+	{
+		GetSDL()->ShowSimpleMessageBox(
+		    SDL_MESSAGEBOX_ERROR, TITLE,
+			"You are playing one of the first Half-Life 25th Anniversary Update builds.\n"
+		    "This build broke compatibility with most mods and is not supported.\n"
+			"Please, update to the latest Steam version.");
+		return false;
+	}
+
+	return true;
 }
 
 /*
@@ -198,8 +226,7 @@ int CL_DLLEXPORT Initialize(cl_enginefunc_t *pEnginefuncs, int iVersion)
 
 	if (bIsInitialized)
 	{
-		GetSDL()->ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "BugfixedHL Fatal Error", "The engine failed to unload client library during restart.");
-		std::abort();
+		HUD_FatalError("The engine failed to unload client library during restart.");
 		return 0;
 	}
 
@@ -214,6 +241,9 @@ int CL_DLLEXPORT Initialize(cl_enginefunc_t *pEnginefuncs, int iVersion)
 	// Save engine version before everything els
 	// (in case the game crashes there, crash handler will know the engine version)
 	gHUD.SaveEngineVersion();
+	
+	if (!CheckForInvalidBuilds(gHUD.GetEngineBuild()))
+		return 0;
 
 	console::Initialize();
 	CvarSystem::RegisterCvars();
@@ -251,6 +281,7 @@ int CL_DLLEXPORT HUD_VidInit(void)
 	gHUD.VidInit();
 	g_StudioRenderer.InitOnConnect();
 	PM_ResetBHopDetection();
+	PM_ResetUseSlowDownDetection();
 	CResults::Get().Stop();
 	GetClientVoiceMgr()->VidInit();
 
@@ -475,6 +506,18 @@ extern "C" void CL_DLLEXPORT F(void *pv)
 	};
 
 	*pcldll_func = cldll_func;
+}
+
+void HUD_FatalError(const char *fmt, ...)
+{
+	char buf[4096];
+	va_list va;
+	va_start(va, fmt);
+	vsnprintf(buf, sizeof(buf), fmt, va);
+	va_end(va);
+
+	GetSDL()->ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "BugfixedHL Fatal Error", buf);
+	std::abort();
 }
 
 //-----------------------------------------------------------------------------

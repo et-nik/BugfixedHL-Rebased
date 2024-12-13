@@ -78,12 +78,8 @@ int WeaponsResource::HasAmmo(WEAPON *p)
 
 void WeaponsResource::LoadWeaponSprites(WEAPON *pWeapon)
 {
-	int i, iRes;
-
-	if (ScreenWidth < 640)
-		iRes = 320;
-	else
-		iRes = 640;
+	int i = 0;
+	int iRes = gHUD.m_iRes;
 
 	char sz[256];
 
@@ -317,16 +313,8 @@ void CHudAmmo::VidInit()
 	// If we've already loaded weapons, let's get new sprites
 	gWR.LoadAllWeaponSprites();
 
-	if (ScreenWidth >= 640)
-	{
-		giABWidth = 20;
-		giABHeight = 4;
-	}
-	else
-	{
-		giABWidth = 10;
-		giABHeight = 2;
-	}
+	giABWidth = SPR_RES_SCALED(20);
+	giABHeight = SPR_RES_SCALED(4);
 }
 
 //
@@ -410,9 +398,9 @@ HSPRITE *WeaponsResource::GetAmmoPicFromWeapon(int iAmmoId, wrect_t &rect)
 
 void WeaponsResource::SelectSlot(int iSlot, int fAdvance, int iDirection)
 {
-	if (CHudMenu::Get()->m_fMenuDisplayed && (fAdvance == FALSE) && (iDirection == 1))
-	{ // menu is overriding slot use commands
-		CHudMenu::Get()->SelectMenuItem(iSlot + 1); // slots are one off the key numbers
+	if ((fAdvance == FALSE) && (iDirection == 1) && CHudMenu::Get()->OnWeaponSlotSelected(iSlot))
+	{
+		// menu is overriding slot use commands
 		return;
 	}
 
@@ -658,7 +646,7 @@ int CHudAmmo::MsgFunc_WeaponList(const char *pszName, int iSize, void *pbuf)
 
 	WEAPON Weapon;
 
-	strcpy(Weapon.szName, READ_STRING());
+	V_strcpy_safe(Weapon.szName, READ_STRING());
 	Weapon.iAmmoType = (int)READ_CHAR();
 
 	Weapon.iMax1 = READ_BYTE();
@@ -675,6 +663,27 @@ int CHudAmmo::MsgFunc_WeaponList(const char *pszName, int iSize, void *pbuf)
 	Weapon.iId = READ_CHAR();
 	Weapon.iFlags = READ_BYTE();
 	Weapon.iClip = 0;
+
+	if (Weapon.iId < 0 || Weapon.iId >= MAX_WEAPONS)
+		return 0;
+
+	if (Weapon.iSlot < 0 || Weapon.iSlot >= MAX_WEAPON_SLOTS + 1)
+		return 0;
+
+	if (Weapon.iSlotPos < 0 || Weapon.iSlotPos >= MAX_WEAPON_POSITIONS + 1)
+		return 0;
+
+	if (Weapon.iAmmoType < -1 || Weapon.iAmmoType >= MAX_AMMO_TYPES)
+		return 0;
+
+	if (Weapon.iAmmo2Type < -1 || Weapon.iAmmo2Type >= MAX_AMMO_TYPES)
+		return 0;
+
+	if (Weapon.iAmmoType >= 0 && Weapon.iMax1 == 0)
+		return 0;
+
+	if (Weapon.iAmmo2Type >= 0 && Weapon.iMax2 == 0)
+		return 0;
 
 	gWR.AddWeapon(&Weapon);
 
@@ -874,7 +883,9 @@ void CHudAmmo::Draw(float flTime)
 	AmmoWidth = gHUD.GetSpriteRect(gHUD.m_HUD_number_0).right - gHUD.GetSpriteRect(gHUD.m_HUD_number_0).left;
 
 	if (!hud_dim.GetBool())
+	{
 		a = MIN_ALPHA + ALPHA_AMMO_MAX;
+	}
 	else if (m_fFade > 0)
 	{
 		// Fade the ammo number back to dim
@@ -884,7 +895,9 @@ void CHudAmmo::Draw(float flTime)
 		a = MIN_ALPHA + (m_fFade / FADE_TIME) * ALPHA_AMMO_FLASH;
 	}
 	else
+	{
 		a = MIN_ALPHA;
+	}
 
 	float alphaDim = a;
 
@@ -909,6 +922,7 @@ void CHudAmmo::Draw(float flTime)
 
 	// Does this weapon have a clip?
 	y = ScreenHeight - gHUD.m_iFontHeight - gHUD.m_iFontHeight / 2;
+	y += (int)(gHUD.m_iFontHeight * 0.2f);
 
 	// Does weapon have any ammo at all?
 	if (m_pWeapon->iAmmoType > 0)
@@ -1126,6 +1140,9 @@ int CHudAmmo::DrawWList(float flTime)
 			if (p)
 				iWidth = p->rcActive.right - p->rcActive.left;
 
+			HSPRITE hSprSelection = gHUD.GetSprite(m_HUD_selection);
+			const wrect_t &rcSprSelection = gHUD.GetSpriteRect(m_HUD_selection);
+
 			for (int iPos = 0; iPos < MAX_WEAPON_POSITIONS; iPos++)
 			{
 				p = gWR.GetWeaponSlot(i, iPos);
@@ -1142,11 +1159,19 @@ int CHudAmmo::DrawWList(float flTime)
 					a = 255 * gHUD.GetHudTransparency();
 					ScaleColors(r, g, b, a);
 
-					SPR_Set(p->hActive, r, g, b);
-					SPR_DrawAdditive(0, x, y, &p->rcActive);
+					if (p->hActive)
+					{
+						SPR_Set(p->hActive, r, g, b);
+						SPR_DrawAdditive(0, x, y, &p->rcActive);
+					}
+					else
+					{
+						// Pink rect
+						gEngfuncs.pfnFillRGBA(x, y, rcSprSelection.GetWidth(), rcSprSelection.GetHeight(), 64, 0, 64, a);
+					}
 
-					SPR_Set(gHUD.GetSprite(m_HUD_selection), r, g, b);
-					SPR_DrawAdditive(0, x, y, &gHUD.GetSpriteRect(m_HUD_selection));
+					SPR_Set(hSprSelection, r, g, b);
+					SPR_DrawAdditive(0, x, y, &rcSprSelection);
 				}
 				else
 				{
@@ -1164,15 +1189,23 @@ int CHudAmmo::DrawWList(float flTime)
 						ScaleColors(r, g, b, a);
 					}
 
-					SPR_Set(p->hInactive, r, g, b);
-					SPR_DrawAdditive(0, x, y, &p->rcInactive);
+					if (p->hInactive)
+					{
+						SPR_Set(p->hInactive, r, g, b);
+						SPR_DrawAdditive(0, x, y, &p->rcInactive);
+					}
+					else
+					{
+						// Pink rect
+						gEngfuncs.pfnFillRGBA(x, y, rcSprSelection.GetWidth(), rcSprSelection.GetHeight(), 48, 0, 48, a);
+					}
 				}
 
 				// Draw Ammo Bar
 
 				DrawAmmoBar(p, x + giABWidth / 2, y, giABWidth, giABHeight);
 
-				y += p->rcActive.bottom - p->rcActive.top + 5;
+				y += rcSprSelection.bottom - rcSprSelection.top + 5;
 			}
 
 			x += iWidth + 5;
@@ -1255,16 +1288,30 @@ iCount is the number of items in the pList
 client_sprite_t *GetSpriteFromList(client_sprite_t *pList, const char *pszNameStart, int iRes, int iCount)
 {
 	if (!pList || iCount <= 0)
-		return NULL;
+		return nullptr;
 
 	int len = strlen(pszNameStart);
 	client_sprite_t *p = pList;
+	client_sprite_t *pFallback = nullptr; //!< Fallback sprite if can't find for current HUD scale
 	while (iCount--)
 	{
-		if (p->iRes == iRes && !strncmp(pszNameStart, p->szName, len))
-			return p;
+		if (!strncmp(pszNameStart, p->szName, len))
+		{
+			if (p->iRes == iRes)
+			{
+				// Found the requested sprite
+				return p;
+			}
+			else if (p->iRes == HUD_FALLBACK_RES)
+			{
+				// At least found a fallbcak
+				pFallback = p;
+			}
+		}
+
 		p++;
 	}
 
-	return NULL;
+	// Return the fallback. It may be null but that's fine.
+	return pFallback;
 }

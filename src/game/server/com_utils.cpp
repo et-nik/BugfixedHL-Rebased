@@ -10,6 +10,7 @@
 //
 
 #ifdef _WIN32
+#undef ARRAYSIZE
 #include <windows.h>
 #endif
 
@@ -17,6 +18,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
+#include "extdll.h"
+#include "util.h"
+
 using std::max;
 using std::min;
 
@@ -73,7 +77,7 @@ bool strrepl(char *str, int size, const char *find, const char *repl)
 		c++;
 	}
 	*buf = 0;
-	strcpy(str, buffer);
+	UTIL_strncpy(str, buffer, size);
 	free(buffer);
 	return true;
 }

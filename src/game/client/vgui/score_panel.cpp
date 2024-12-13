@@ -209,6 +209,12 @@ void CScorePanel::UpdateOnPlayerInfo(int client)
 
 void CScorePanel::DeathMsg(int killer, int victim)
 {
+	if (!GetThisPlayerInfo())
+	{
+		// Not yet connected
+		return;
+	}
+
 	if (victim == GetThisPlayerInfo()->GetIndex())
 	{
 		// if we were the one killed, set the scoreboard to indicate killer
@@ -842,7 +848,7 @@ Color CScorePanel::GetPlayerBgColor(CPlayerInfo *pi)
 
 float CScorePanel::CalculateEfficiency(int kills, int deaths)
 {
-	int type = clamp(hud_scoreboard_efftype.GetInt(), 0, 1);
+	int type = clamp(hud_scoreboard_efftype.GetInt(), 0, 2);
 
 	switch (type)
 	{
@@ -859,6 +865,13 @@ float CScorePanel::CalculateEfficiency(int kills, int deaths)
 		if (deaths == -1)
 			deaths = 0;
 		return (float)kills / (deaths + 1);
+	}
+	case 2:
+	{
+		// K / (K + D)
+		if (kills + deaths == 0)
+			return 1.0f;
+		return (float)kills / (kills + deaths);
 	}
 	}
 
@@ -915,8 +928,9 @@ void CScorePanel::OpenPlayerMenu(int itemID)
 	}
 
 	// Player muting
+	bool isMuted = GetClientVoiceMgr()->IsPlayerBlocked(m_MenuData.nClient);
 	bool thisPlayer = kv->GetBool("thisplayer", 0);
-	if (thisPlayer)
+	if (thisPlayer && !isMuted)
 	{
 		// Can't mute yourself
 		m_pPlayerMenu->UpdateMenuItem(m_MenuData.nMuteItemID, "#BHL_Scores_MenuMute", new KeyValues("Command", "command", "MenuMute"));
@@ -925,7 +939,7 @@ void CScorePanel::OpenPlayerMenu(int itemID)
 	else
 	{
 		m_pPlayerMenu->SetItemEnabled(m_MenuData.nMuteItemID, true);
-		if (GetClientVoiceMgr()->IsPlayerBlocked(m_MenuData.nClient))
+		if (isMuted)
 		{
 			m_pPlayerMenu->UpdateMenuItem(m_MenuData.nMuteItemID, "#BHL_Scores_MenuUnmute", new KeyValues("Command", "command", "MenuMute"));
 		}
@@ -949,9 +963,6 @@ void CScorePanel::OnPlayerMenuCommand(MenuAction command)
 	{
 	case MenuAction::Mute:
 	{
-		if (pi->IsThisPlayer())
-			return;
-
 		if (GetClientVoiceMgr()->IsPlayerBlocked(pi->GetIndex()))
 		{
 			// Unmute
@@ -961,7 +972,7 @@ void CScorePanel::OnPlayerMenuCommand(MenuAction command)
 			snprintf(string1, sizeof(string1), CHudTextMessage::BufferedLocaliseTextString("#Unmuted"), pi->GetDisplayName(true));
 			CHudChat::Get()->ChatPrintf(0, "** %s", string1);
 		}
-		else
+		else if (!pi->IsThisPlayer())
 		{
 			// Mute
 			GetClientVoiceMgr()->SetPlayerBlockedState(pi->GetIndex(), true);

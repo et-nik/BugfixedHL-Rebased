@@ -26,6 +26,7 @@
 #include <vector>
 #include <queue>
 #include <unordered_map>
+#include <string>
 #include <tier0/dbg.h>
 #include <Color.h>
 #include "global_consts.h"
@@ -52,6 +53,9 @@
 #define HUD_INTERMISSION 2
 #define HUD_DRAW_ALWAYS  4 //!< Draw even if hud_draw = 0
 
+//! Fallback sprite resolution if the current one can't be found.
+constexpr int HUD_FALLBACK_RES = 640;
+
 namespace vgui2
 {
 class IScheme;
@@ -59,12 +63,7 @@ class IScheme;
 
 class ConVar;
 
-enum class BHopCap
-{
-	Disabled = 0,
-	Enabled = 1,
-	Auto = 2
-};
+enum class EBHopCap;
 
 enum class HudPart
 {
@@ -78,6 +77,27 @@ enum class ColorCodeAction
 	Ignore = 0, //!< Color codes are not touched.
 	Handle = 1, //!< Color codes change the color.
 	Strip = 2, //!< Color codes don't change the color but are removed from the string.
+};
+
+enum class EHudScale
+{
+	//! Detect automatically based on resolution.
+	Auto,
+
+	//! 50% scale (320_x.spr).
+	X05,
+
+	//! 100% scale (640_x.spr).
+	X1,
+
+	//! 200% scale (1280_x.spr).
+	X2,
+
+	//! 400% scale (2560_x.spr).
+	X4,
+
+	_Min = Auto,
+	_Max = X4,
 };
 
 struct NoTeamColor
@@ -98,8 +118,8 @@ public:
 	int m_iHideHUDDisplay;
 	int m_iFOV;
 	int m_Teamplay;
-	int m_iRes;
-	int m_iFontHeight;
+	int m_iRes = -1;
+	int m_iFontHeight;		//!< Sprite font height
 	int m_iWeaponBits;
 	int m_fPlayerDead;
 	int m_iIntermission;
@@ -151,6 +171,9 @@ public:
 	int GetHudCharWidth(int c);
 	int CalculateCharWidth(int c);
 
+	//! @returns The font height for string render functions.
+	int GetHudFontSize() { return m_scrinfo.iCharHeight; }
+
 	//-----------------------------------------------------
 	// Sprite functions
 	//-----------------------------------------------------
@@ -170,9 +193,10 @@ public:
 	int MsgFunc_ViewMode(const char *pszName, int iSize, void *pbuf);
 	int MsgFunc_SetFOV(const char *pszName, int iSize, void *pbuf);
 	int MsgFunc_Concuss(const char *pszName, int iSize, void *pbuf);
+	int MsgFunc_Fog(const char *pszName, int iSize, void *pbuf);
 
 	float GetSensitivity();
-	BHopCap GetBHopCapState();
+	EBHopCap GetBHopCapState();
 	bool IsHTMLEnabled();
 
 	/**
@@ -202,7 +226,6 @@ public:
 
 	ColorCodeAction GetColorCodeAction();
 	Color GetColorCodeColor(int code);
-	const char *GetEngineVersion();
 
 	/**
 	 * Returns a color for client.
@@ -221,6 +244,18 @@ public:
 	 */
 	inline int GetFrameCount() { return m_iFrameCount; }
 
+	//! @returns The engine version string (value of sv_version cvar).
+	const char *GetEngineVersion();
+
+	//! @returns The engine build number.
+	int GetEngineBuild() const { return m_iEngineBuildNumber; }
+
+	//! @returns Maximum supported HUD scale by the game version.
+	EHudScale GetMaxHudScale() const { return m_MaxHudScale; }
+
+	//! @returns Currently loaded sprite size. Returns Auto if not loaded.
+	EHudScale GetCurrentHudScale() const { return m_CurrentHudScale; }
+
 private:
 	struct SpriteName
 	{
@@ -237,12 +272,17 @@ private:
 	std::vector<CHudElem *> m_HudList;
 	std::unordered_map<int, int> m_CharWidths;
 	char m_szEngineVersion[128];
+	int m_iEngineBuildNumber = 0;
+
+	EHudScale m_MaxHudScale = EHudScale::Auto;		//! Maximum supported HUD scale by the game version.
+	EHudScale m_CurrentHudScale = EHudScale::Auto;	//! Currently loaded sprite size.
 
 	// the memory for these arrays are allocated in the first call
 	// to CHud::VidInit(), when the hud.txt and associated sprites are loaded.
 	std::vector<HSPRITE> m_rghSprites; /*[HUD_SPRITE_COUNT]*/ // the sprites loaded from hud.txt
 	std::vector<wrect_t> m_rgrcRects; /*[HUD_SPRITE_COUNT]*/
 	std::vector<SpriteName> m_rgszSpriteNames; /*[HUD_SPRITE_COUNT].name*/
+	std::vector<std::string> m_rgSpritePaths;
 
 	std::queue<std::function<void()>> m_NextFrameQueue;
 
@@ -260,6 +300,9 @@ private:
 
 	void UpdateHudColors();
 	void UpdateSupportsCvar();
+
+	//! Detects the maximum supported HUD scale.
+	EHudScale DetectMaxHudScale();
 
 	template <typename T>
 	inline T *RegisterHudElem()

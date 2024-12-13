@@ -25,7 +25,7 @@ CHudSubOptions::CHudSubOptions(vgui2::Panel *parent)
 
 	m_pRenderCheckbox = new CCvarCheckButton(this, "RenderCheckbox", "#BHL_AdvOptions_HUD_Render", "hud_client_renderer");
 	m_pDimCheckbox = new CCvarCheckButton(this, "DimCheckbox", "#BHL_AdvOptions_HUD_Dim", "hud_dim");
-	m_pViewmodelCheckbox = new CCvarCheckButton(this, "ViewmodelCheckbox", "#BHL_AdvOptions_HUD_Viewmodel", "r_drawviewmodel", true);
+	m_pMenuFKeys = new CCvarCheckButton(this, "MenuFKeys", "#BHL_AdvOptions_HUD_MenuFKeys", "hud_menu_fkeys");
 	m_pWeaponSpriteCheckbox = new CCvarCheckButton(this, "WeaponSpriteCheckbox", "#BHL_AdvOptions_HUD_WeapSprite", "hud_weapon");
 	m_pCenterIdCvar = new CCvarCheckButton(this, "CenterIdCvar", "#BHL_AdvOptions_HUD_CenterId", "hud_centerid");
 	m_pRainbowCvar = new CCvarCheckButton(this, "RainbowCvar", "#BHL_AdvOptions_HUD_Rainbow", "hud_rainbow");
@@ -38,12 +38,26 @@ CHudSubOptions::CHudSubOptions(vgui2::Panel *parent)
 
 	m_pDeathnoticeVGui = new CCvarCheckButton(this, "DeathnoticeCheckbox", "#BHL_AdvOptions_HUD_Deathnotice", "hud_deathnotice_vgui");
 
-	m_pTimerLabel = new vgui2::Label(this, "TimerLabel", "#BHL_AdvOptions_Hud_Timer");
-	m_pTimerBox = new vgui2::ComboBox(this, "TimerBox", 4, false);
-	m_TimerItems[0] = m_pTimerBox->AddItem("#BHL_AdvOptions_Hud_Timer0", new KeyValues("Off", "value", 0));
-	m_TimerItems[1] = m_pTimerBox->AddItem("#BHL_AdvOptions_Hud_Timer1", new KeyValues("TimeLeft", "value", 1));
-	m_TimerItems[2] = m_pTimerBox->AddItem("#BHL_AdvOptions_Hud_Timer2", new KeyValues("TimePassed", "value", 2));
-	m_TimerItems[3] = m_pTimerBox->AddItem("#BHL_AdvOptions_Hud_Timer3", new KeyValues("LocalTime", "value", 3));
+	m_pTimerBox = new CCVarComboBox(this, "TimerBox", "hud_timer");
+	m_pTimerBox->AddItem("#BHL_AdvOptions_Hud_Timer0", "0");
+	m_pTimerBox->AddItem("#BHL_AdvOptions_Hud_Timer1", "1");
+	m_pTimerBox->AddItem("#BHL_AdvOptions_Hud_Timer2", "2");
+	m_pTimerBox->AddItem("#BHL_AdvOptions_Hud_Timer3", "3");
+
+	m_pScaleBox = new CCVarComboBox(this, "ScaleBox", "hud_scale");
+	m_pScaleBox->AddItem("#BHL_AdvOptions_Hud_ScaleAuto", "0");
+
+	constexpr const char *SCALES[] = { "50%", "100%", "200%", "400%" };
+
+	for (int i = 1; i <= std::size(SCALES); i++)
+	{
+		char buf[16];
+		snprintf(buf, sizeof(buf), "%d", i);
+		int itemId = m_pScaleBox->AddItem(SCALES[i - 1], buf);
+
+		bool isSupported = i <= (int)gHUD.GetMaxHudScale();
+		m_pScaleBox->SetItemEnabled(itemId, isSupported);
+	}
 
 	LoadControlSettings(VGUI2_ROOT_DIR "resource/options/HudSubOptions.res");
 	m_pOpacityLabel->MoveToFront(); // Obscured by the slider
@@ -56,29 +70,6 @@ CHudSubOptions::CHudSubOptions(vgui2::Panel *parent)
 	}
 }
 
-void CHudSubOptions::PerformLayout()
-{
-	BaseClass::PerformLayout();
-
-	int x, speedY, jumpY;
-	int wide, tall;
-
-	// Resize hud_speedometer
-	m_pSpeedCheckbox->GetPos(x, speedY);
-	m_pSpeedCheckbox->GetContentSize(wide, tall);
-	m_pSpeedCheckbox->SetWide(wide);
-	int xpos = x + wide;
-
-	// Resize hud_jumpspeed
-	m_pJumpSpeedCheckbox->GetPos(x, jumpY);
-	m_pJumpSpeedCheckbox->GetContentSize(wide, tall);
-	m_pJumpSpeedCheckbox->SetWide(wide);
-	xpos = max(xpos, x + wide);
-
-	m_pSpeedCrossCheckbox->SetPos(xpos + 4, speedY);
-	m_pJumpSpeedCrossCheckbox->SetPos(xpos + 4, jumpY);
-}
-
 void CHudSubOptions::OnResetData()
 {
 	if (m_pRenderCheckbox->IsEnabled())
@@ -88,7 +79,7 @@ void CHudSubOptions::OnResetData()
 
 	m_pOpacityValue->ResetData();
 	m_pDimCheckbox->ResetData();
-	m_pViewmodelCheckbox->ResetData();
+	m_pMenuFKeys->ResetData();
 	m_pWeaponSpriteCheckbox->ResetData();
 	m_pCenterIdCvar->ResetData();
 	m_pRainbowCvar->ResetData();
@@ -102,7 +93,8 @@ void CHudSubOptions::OnResetData()
 	else
 		m_pDeathnoticeVGui->SetSelected(false);
 
-	TimerResetData();
+	m_pTimerBox->ResetData();
+	m_pScaleBox->ResetData();
 }
 
 void CHudSubOptions::OnApplyChanges()
@@ -112,7 +104,7 @@ void CHudSubOptions::OnApplyChanges()
 
 	m_pOpacityValue->ApplyChanges();
 	m_pDimCheckbox->ApplyChanges();
-	m_pViewmodelCheckbox->ApplyChanges();
+	m_pMenuFKeys->ApplyChanges();
 	m_pWeaponSpriteCheckbox->ApplyChanges();
 	m_pCenterIdCvar->ApplyChanges();
 	m_pRainbowCvar->ApplyChanges();
@@ -124,26 +116,8 @@ void CHudSubOptions::OnApplyChanges()
 	if (m_pDeathnoticeVGui->IsEnabled())
 		m_pDeathnoticeVGui->ApplyChanges();
 
-	TimerApplyChanges();
-}
-
-void CHudSubOptions::TimerResetData()
-{
-	int timer = gEngfuncs.pfnGetCvarFloat("hud_timer");
-	timer = clamp(timer, 0, 3);
-	m_pTimerBox->ActivateItem(m_TimerItems[timer]);
-}
-
-void CHudSubOptions::TimerApplyChanges()
-{
-	KeyValues *userdata = m_pTimerBox->GetActiveItemUserData();
-	Assert(userdata);
-	int sel = userdata->GetInt("value", 0);
-	Assert(sel >= 0 && sel <= 3);
-
-	char buf[128];
-	snprintf(buf, sizeof(buf), "hud_timer %d", sel);
-	gEngfuncs.pfnClientCmd(buf);
+	m_pTimerBox->ApplyChanges();
+	m_pScaleBox->ApplyChanges();
 }
 
 void CHudSubOptions::OnSliderMoved(KeyValues *kv)

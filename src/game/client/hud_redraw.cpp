@@ -34,13 +34,14 @@ int grgLogoFrame[MAX_LOGO_FRAMES] = {
 };
 
 float HUD_GetFOV(void);
+float IN_GetMouseSensitivity();
 
-extern cvar_t *sensitivity;
 extern ConVar zoom_sensitivity_ratio;
 
 ConVar hud_colortext("hud_colortext", "1", FCVAR_BHL_ARCHIVE);
 ConVar hud_takesshots("hud_takesshots", "0", FCVAR_ARCHIVE, "Whether or not to automatically take screenshots at the end of a round");
-ConVar default_fov("default_fov", "90", FCVAR_BHL_ARCHIVE, "Default horizontal field of view");
+ConVar default_fov("default_fov", "90", FCVAR_ARCHIVE | FCVAR_BHL_ARCHIVE, "Default horizontal field of view");
+ConVar cl_useslowdown("cl_useslowdown", "2", FCVAR_BHL_ARCHIVE, "Slowdown behavior on +USE. 0 - Old. 1 - New. 2 - Auto-detect.");
 
 // Think
 void CHud::Think(void)
@@ -82,7 +83,7 @@ void CHud::Think(void)
 	else
 	{
 		// set a new sensitivity that is proportional to the change from the FOV default
-		m_flMouseSensitivity = sensitivity->value * ((float)newfov / (float)default_fov.GetInt()) * zoom_sensitivity_ratio.GetFloat();
+		m_flMouseSensitivity = IN_GetMouseSensitivity() * ((float)newfov / (float)default_fov.GetInt()) * zoom_sensitivity_ratio.GetFloat();
 	}
 
 	// think about default fov
@@ -97,9 +98,14 @@ void CHud::Think(void)
 	}
 
 	// Update BHop state
-	int bhopCapState = (int)GetBHopCapState();
+	EBHopCap bhopCapState = GetBHopCapState();
 	if (PM_GetBHopCapState() != bhopCapState)
 		PM_SetBHopCapState(bhopCapState);
+
+	// Update slowdown state
+	EUseSlowDownType useSlowDown = cl_useslowdown.GetEnumClamped<EUseSlowDownType>();
+	if (PM_GetUseSlowDownType() != useSlowDown)
+		PM_SetUseSlowDownType(useSlowDown);
 
 	// Update color code action
 	int colorText = clamp(hud_colortext.GetInt(), 0, 2);

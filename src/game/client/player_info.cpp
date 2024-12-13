@@ -200,6 +200,18 @@ CPlayerInfo *GetThisPlayerInfo()
 	return s_ThisPlayerInfo;
 }
 
+CPlayerInfo *GetPlayerInfoSafe(int idx)
+{
+	if (!(idx >= 1 && idx <= MAX_PLAYERS))
+		return nullptr;
+
+	CPlayerInfo *pInfo = GetPlayerInfo(idx);
+	if (!pInfo->IsConnected())
+		return nullptr;
+
+	return pInfo;
+}
+
 int CPlayerInfo::GetIndex()
 {
 	return m_iIndex;
@@ -322,6 +334,7 @@ bool CPlayerInfo::IsSpectator()
 
 const char *CPlayerInfo::GetDisplayName(bool bNoColorCodes)
 {
+	Assert(m_bIsConnected);
 	const char *name = nullptr;
 
 	if (m_szRealName[0])

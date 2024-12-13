@@ -21,6 +21,7 @@ add_sources(
 	demo.h
 	engfuncs.cpp
 	engfuncs.h
+	engine_builds.h
 	engine_patches.cpp
 	engine_patches.h
 	entity.cpp
@@ -30,6 +31,8 @@ add_sources(
 	events.cpp
 	eventscripts.h
 	Exports.h
+	fog.cpp
+	fog.h
 	GameStudioModelRenderer.cpp
 	GameStudioModelRenderer.h
 	global_consts.h
@@ -51,6 +54,7 @@ add_sources(
 	net.h
 	opengl.cpp
 	opengl.h
+	pch.h
 	player_info.cpp
 	player_info.h
 	rainbow.cpp
@@ -89,6 +93,7 @@ add_sources(
 	../server/shotgun.cpp
 	../server/squeakgrenade.cpp
 	../server/tripmine.cpp
+	../server/util_shared.cpp
 )
 
 if( PLATFORM_WINDOWS )
