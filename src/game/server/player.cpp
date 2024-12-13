@@ -3104,16 +3104,33 @@ static CBaseEntity *EntSelectSpawnPointOriginal(CBasePlayer *pPlayer)
 	if (FNullEnt(pSpot)) // skip over the null point
 		pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
 
-	if (g_pGameRules->IsTeamplay() && mp_teamspawn.GetBool())
+	CBaseEntity *pFirstSpot = pSpot;
+
+	if (mp_teamspawn.GetBool())
 	{
 		// try to find team spawn
-		CBaseEntity *pFirstSpot = pSpot;
+		int team = pPlayer->pev->team;
+
+		if (g_pGameRules->IsTeamplay()) {
+			team = g_pGameRules->GetTeamIndex(pPlayer->TeamID());
+		}
+
+		// define pFistSpot with team
+		do
+		{
+			if (pSpot && team == pSpot->pev->team)
+			{
+				pFirstSpot = pSpot;
+				break;
+			}
+			pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
+		} while (pSpot != pFirstSpot);
 
 		do
 		{
 			if (pSpot)
 			{
-				if (g_pGameRules->GetTeamIndex(pPlayer->TeamID()) != pSpot->pev->team)
+				if (team  != pSpot->pev->team)
 				{
 					pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
 					continue;
@@ -3128,8 +3145,6 @@ static CBaseEntity *EntSelectSpawnPointOriginal(CBasePlayer *pPlayer)
 			pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch");
 		} while (pSpot != pFirstSpot);
 	}
-
-	CBaseEntity *pFirstSpot = pSpot;
 
 	do
 	{
@@ -3185,10 +3200,15 @@ static CBaseEntity *EntSelectSpawnPointHL25(CBaseEntity *pPlayer)
 
 	CBaseEntity *pFirstSpot = pSpot;
 
-	if (g_pGameRules->IsTeamplay() && mp_teamspawn.GetBool())
+	if (mp_teamspawn.GetBool())
 	{
 		// try to find team spawn
-		CBaseEntity *pFirstSpot = pSpot;
+
+		int team = pPlayer->pev->team;
+
+		if (g_pGameRules->IsTeamplay()) {
+			team = g_pGameRules->GetTeamIndex(pPlayer->TeamID());
+		}
 
 		do
 		{
@@ -3196,7 +3216,7 @@ static CBaseEntity *EntSelectSpawnPointHL25(CBaseEntity *pPlayer)
 			{
 				// check if pSpot is valid
 				if (IsSpawnPointValid(pPlayer, pSpot) == SpawnPointValidity::Valid &&
-					g_pGameRules->GetTeamIndex(pPlayer->TeamID()) != pSpot->pev->team)
+					team != pSpot->pev->team)
 				{
 					if (pSpot->pev->origin == Vector(0, 0, 0))
 					{
@@ -3255,12 +3275,18 @@ static CBaseEntity *EntSelectSpawnPointFair(CBaseEntity *pPlayer)
 	// Find all spawn spots
 	CBaseEntity *pSpot = nullptr;
 
-	if (g_pGameRules->IsTeamplay() && mp_teamspawn.GetBool())
+	if (mp_teamspawn.GetBool())
 	{
 		// try to find team spawn
+		int team = pPlayer->pev->team;
+
+		if (g_pGameRules->IsTeamplay()) {
+			team = g_pGameRules->GetTeamIndex(pPlayer->TeamID());
+		}
+
 		while ((pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch")))
 		{
-			if (g_pGameRules->GetTeamIndex(pPlayer->TeamID()) != pSpot->pev->team)
+			if (team != pSpot->pev->team)
 				continue;
 
 			spotInfos[spotsCount].pSpot = pSpot;
