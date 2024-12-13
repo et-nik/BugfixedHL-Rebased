@@ -718,7 +718,7 @@ void CBasePlayer::PackDeadPlayerItems(void)
 	iWeaponRules = g_pGameRules->DeadPlayerWeapons(this);
 	iAmmoRules = g_pGameRules->DeadPlayerAmmo(this);
 
-	if (mp_weaponbox_time.GetFloat() == 0 || (iWeaponRules == GR_PLR_DROP_GUN_NO && iAmmoRules == GR_PLR_DROP_AMMO_NO))
+	if (iWeaponRules == GR_PLR_DROP_GUN_NO && iAmmoRules == GR_PLR_DROP_AMMO_NO)
 	{
 		// nothing to pack. Remove the weapons and return. Don't call create on the box!
 		RemoveAllItems(TRUE);
@@ -798,16 +798,8 @@ void CBasePlayer::PackDeadPlayerItems(void)
 	pWeaponBox->pev->angles.x = 0; // don't let weaponbox tilt.
 	pWeaponBox->pev->angles.z = 0;
 
-	if (mp_weaponbox_time.GetFloat() > 0)
-	{
-		pWeaponBox->SetThink(&CWeaponBox::Kill);
-		pWeaponBox->pev->nextthink = gpGlobals->time + mp_weaponbox_time.GetFloat();
-	}
-	else
-	{
-		// Stays forever
-		pWeaponBox->pev->nextthink = 0;
-	}
+	pWeaponBox->SetThink(&CWeaponBox::Kill);
+	pWeaponBox->pev->nextthink = gpGlobals->time + 120;
 
 	// back these two lists up to their first elements
 	iPA = 0;
@@ -1305,7 +1297,7 @@ void CBasePlayer::PlayerDeathThink(void)
 		if (flForward <= 0)
 			pev->velocity = g_vecZero;
 		else
-			pev->velocity = flForward * pev->velocity.Normalized();
+			pev->velocity = flForward * pev->velocity.Normalize();
 	}
 
 	if (HasWeapons())
@@ -1781,7 +1773,13 @@ void CBasePlayer::AddPoints(int score, BOOL bAllowNegativeScore)
 
 	pev->frags += score;
 
-	SendScoreInfo();
+	MESSAGE_BEGIN(MSG_ALL, gmsgScoreInfo);
+	WRITE_BYTE(ENTINDEX(edict()));
+	WRITE_SHORT(pev->frags);
+	WRITE_SHORT(m_iDeaths);
+	WRITE_SHORT(0);
+	WRITE_SHORT(g_pGameRules->GetTeamIndex(m_szTeamName) + 1);
+	MESSAGE_END();
 }
 
 void CBasePlayer::AddPointsToTeam(int score, BOOL bAllowNegativeScore)
@@ -2826,7 +2824,7 @@ Returns the entity to spawn at
 USES AND SETS GLOBAL g_pLastSpawn
 ============
 */
-edict_t *EntSelectSpawnPoint(CBasePlayer *pPlayer)
+edict_t *EntSelectSpawnPoint(CBaseEntity *pPlayer)
 {
 	CBaseEntity *pSpot;
 	edict_t *player;
@@ -4601,7 +4599,7 @@ Vector CBasePlayer ::AutoaimDeflection(Vector &vecSrc, float flDist, float flDel
 
 		center = pEntity->BodyTarget(vecSrc);
 
-		dir = (center - vecSrc).Normalized();
+		dir = (center - vecSrc).Normalize();
 
 		// make sure it's in front of the player
 		if (DotProduct(dir, gpGlobals->v_forward) < 0)
@@ -4744,17 +4742,6 @@ void CBasePlayer::DropPlayerItem(char *pszItemName)
 	pWeaponBox->pev->angles.z = 0;
 	pWeaponBox->PackWeapon(pWeapon);
 	pWeaponBox->pev->velocity = gpGlobals->v_forward * 300 + gpGlobals->v_forward * 100;
-
-	if (mp_weapondrop_time.GetFloat() > 0)
-	{
-		pWeaponBox->SetThink(&CWeaponBox::Kill);
-		pWeaponBox->pev->nextthink = gpGlobals->time + mp_weapondrop_time.GetFloat();
-	}
-	else
-	{
-		// Stays forever
-		pWeaponBox->pev->nextthink = 0;
-	}
 
 	// drop half of the ammo for this weapon.
 	int iAmmoIndex = GetAmmoIndex(pWeapon->pszAmmo1()); // ???
