@@ -665,7 +665,7 @@ void CHalfLifeMultiplay ::PlayerSpawn(CBasePlayer *pPlayer)
 	{
 		// don't let him spawn as soon as he enters the server
 		// give enough time to plugins to send the player to spectator mode
-		pPlayer->m_flNextAttack = 3;
+		pPlayer->m_flNextAttack = 5;
 
 		pPlayer->StartWelcomeCam();
 		return;
