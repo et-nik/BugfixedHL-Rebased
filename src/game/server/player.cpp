@@ -69,6 +69,24 @@ ConVar mp_weapondrop_time("mp_weapondrop_time", "0", FCVAR_SERVER, "Manually dro
 #define FLASH_DRAIN_TIME  1.2 //100 units/3 minutes
 #define FLASH_CHARGE_TIME 0.2 // 100 units/20 seconds  (seconds per unit)
 
+constexpr int HalfPlayerHeight = 36;
+constexpr int HeightTolerance = 20;
+constexpr float ItemSearchRadius = 512;
+
+enum class SpawnPointValidity
+{
+	NonValid,
+	Valid,
+	HasPlayers,
+};
+
+struct SpotInfo
+{
+	CBaseEntity *pSpot = nullptr;
+	float flItemsWeight = 0.0f;
+	SpawnPointValidity nValidity = SpawnPointValidity::NonValid;
+};
+
 // Global Savedata for player
 TYPEDESCRIPTION CBasePlayer::m_playerSaveData[] = {
 	DEFINE_FIELD(CBasePlayer, m_flFlashLightTime, FIELD_TIME),
@@ -2795,27 +2813,141 @@ pt_end:
 }
 
 // checks if the spot is clear of players
-BOOL IsSpawnPointValid(CBaseEntity *pPlayer, CBaseEntity *pSpot)
+static SpawnPointValidity IsSpawnPointValid(CBaseEntity *pPlayer, CBaseEntity *pSpot)
 {
 	CBaseEntity *ent = NULL;
 
 	if (!pSpot->IsTriggered(pPlayer))
 	{
-		return FALSE;
+		return SpawnPointValidity::NonValid;
 	}
 
 	while ((ent = UTIL_FindEntityInSphere(ent, pSpot->pev->origin, 128)) != NULL)
 	{
 		// if ent is a client, don't spawn on 'em
 		if (ent->IsPlayer() && ent != pPlayer)
-			return FALSE;
+			return SpawnPointValidity::NonValid;
 	}
 
-	return TRUE;
+	return SpawnPointValidity::Valid;
 }
 
 DLL_GLOBAL CBaseEntity *g_pLastSpawn;
 inline int FNullEnt(CBaseEntity *ent) { return (ent == NULL) || FNullEnt(ent->edict()); }
+
+static float GetItemWeight(CBasePlayerItem *item)
+{
+	ItemInfo p;
+	if (item->GetItemInfo(&p) && p.iWeight > 0)
+	{
+		return (float)p.iWeight / 10;
+	}
+	return 1.0f;
+}
+
+static bool IsSameFloor(Vector spot, Vector item)
+{
+	return (spot.z - HalfPlayerHeight - HeightTolerance <= item.z) && (spot.z + HalfPlayerHeight + HeightTolerance >= item.z);
+}
+
+static float CountEntitesInSphere(Vector point)
+{
+	float weight = 0;
+	CBaseEntity *ent = nullptr;
+
+	while ((ent = UTIL_FindEntityInSphere(ent, point, ItemSearchRadius)))
+	{
+		CBasePlayerItem *item = dynamic_cast<CBasePlayerItem *>(ent);
+
+		if (!item || (item->pev->effects & EF_NODRAW) == EF_NODRAW)
+			continue;
+
+		weight += GetItemWeight(item);
+
+		if (IsSameFloor(point, item->pev->origin))
+			weight += 2.0f;
+	}
+
+	return weight;
+}
+
+static int SortSpots(SpotInfo spotInfos[], int spotsCount)
+{
+	int validSpotsCount = 0;
+	SpotInfo replacement;
+	for (int i = 0; i < spotsCount; i++)
+	{
+		// Search for max weight separately for valid and non valid spots
+		float maxWeightForValid = 0;
+		int maxWeightIndexForValid = -1;
+		float maxWeightForNonValid = 0;
+		int maxWeightIndexForNonValid = -1;
+
+		for (int j = i + 1; j < spotsCount; j++)
+		{
+			if (spotInfos[j].nValidity == SpawnPointValidity::Valid)
+			{
+				if (spotInfos[j].flItemsWeight >= maxWeightForValid)
+				{
+					maxWeightForValid = spotInfos[j].flItemsWeight;
+					maxWeightIndexForValid = j;
+				}
+			}
+			else
+			{
+				if (spotInfos[j].flItemsWeight >= maxWeightForNonValid)
+				{
+					maxWeightForNonValid = spotInfos[j].flItemsWeight;
+					maxWeightIndexForNonValid = j;
+				}
+			}
+		}
+
+		if (maxWeightIndexForValid < 0 && maxWeightIndexForNonValid < 0)
+		{
+			if (spotInfos[i].nValidity == SpawnPointValidity::Valid)
+				validSpotsCount++;
+			break;
+		}
+
+		// Select spot to exchange, valid ones first
+		int replaceIndex = -1;
+
+		if (maxWeightIndexForValid > 0)
+		{
+			validSpotsCount = i + 1;
+			if (spotInfos[i].nValidity != SpawnPointValidity::Valid || spotInfos[i].flItemsWeight < maxWeightForValid)
+				replaceIndex = maxWeightIndexForValid;
+		}
+		else if (maxWeightIndexForNonValid > 0)
+		{
+			if (spotInfos[i].flItemsWeight < maxWeightForNonValid)
+				replaceIndex = maxWeightIndexForNonValid;
+		}
+
+		// Exchange spots
+		if (replaceIndex > 0)
+		{
+			replacement = spotInfos[i];
+			spotInfos[i] = spotInfos[replaceIndex];
+			spotInfos[replaceIndex] = replacement;
+		}
+	}
+
+	return validSpotsCount;
+}
+
+static void ClearSpawn(CBaseEntity *pSpot, edict_t *player)
+{
+	CBaseEntity *ent = nullptr;
+
+	while ((ent = UTIL_FindEntityInSphere(ent, pSpot->pev->origin, 128)))
+	{
+		// if ent is a client, kill em (unless they are ourselves)
+		if (ent->IsPlayer() && !(ent->edict() == player))
+			ent->TakeDamage(VARS(INDEXENT(0)), VARS(INDEXENT(0)), 300, DMG_GENERIC);
+	}
+}
 
 /*
 ============
@@ -2826,7 +2958,7 @@ Returns the entity to spawn at
 USES AND SETS GLOBAL g_pLastSpawn
 ============
 */
-edict_t *EntSelectSpawnPoint(CBasePlayer *pPlayer)
+static CBaseEntity *EntSelectSpawnPointOriginal(CBasePlayer *pPlayer)
 {
 	CBaseEntity *pSpot;
 	edict_t *player;
@@ -2838,10 +2970,12 @@ edict_t *EntSelectSpawnPoint(CBasePlayer *pPlayer)
 	{
 		pSpot = UTIL_FindEntityByClassname(g_pLastSpawn, "info_player_coop");
 		if (!FNullEnt(pSpot))
-			goto ReturnSpot;
+			return pSpot;
+
 		pSpot = UTIL_FindEntityByClassname(g_pLastSpawn, "info_player_start");
+
 		if (!FNullEnt(pSpot))
-			goto ReturnSpot;
+			return pSpot;
 	}
 	else if (g_pGameRules->IsDeathmatch())
 	{
@@ -2886,9 +3020,9 @@ edict_t *EntSelectSpawnPoint(CBasePlayer *pPlayer)
 						continue;
 					}
 
-					if (IsSpawnPointValid(pPlayer, pSpot) && pSpot->pev->origin != Vector(0, 0, 0))
+					if (IsSpawnPointValid(pPlayer, pSpot) == SpawnPointValidity::Valid && pSpot->pev->origin != Vector(0, 0, 0))
 					{
-						goto ReturnSpot;
+						return pSpot;
 					}
 				}
 
@@ -2900,9 +3034,9 @@ edict_t *EntSelectSpawnPoint(CBasePlayer *pPlayer)
 		{
 			if (pSpot)
 			{
-				if (IsSpawnPointValid(pPlayer, pSpot) && pSpot->pev->origin != Vector(0, 0, 0))
+				if (IsSpawnPointValid(pPlayer, pSpot) == SpawnPointValidity::Valid && pSpot->pev->origin != Vector(0, 0, 0))
 				{
-					goto ReturnSpot;
+					return pSpot;
 				}
 			}
 
@@ -2919,7 +3053,8 @@ edict_t *EntSelectSpawnPoint(CBasePlayer *pPlayer)
 				if (ent->IsPlayer() && !(ent->edict() == player))
 					ent->TakeDamage(VARS(INDEXENT(0)), VARS(INDEXENT(0)), 300, DMG_GENERIC);
 			}
-			goto ReturnSpot;
+
+			return pSpot;
 		}
 	}
 
@@ -2928,16 +3063,104 @@ edict_t *EntSelectSpawnPoint(CBasePlayer *pPlayer)
 	{
 		pSpot = UTIL_FindEntityByClassname(NULL, "info_player_start");
 		if (!FNullEnt(pSpot))
-			goto ReturnSpot;
+			return pSpot;
 	}
 	else
 	{
 		pSpot = UTIL_FindEntityByTargetname(NULL, STRING(gpGlobals->startspot));
 		if (!FNullEnt(pSpot))
-			goto ReturnSpot;
+			return pSpot;
 	}
 
-ReturnSpot:
+	return pSpot;
+}
+
+static CBaseEntity *EntSelectSpawnPointFair(CBaseEntity *pPlayer)
+{
+	constexpr int MAX_SPOTS = 100;
+	SpotInfo spotInfos[MAX_SPOTS];
+
+	// New way to find spawn spot: count items around
+	int spotsCount = 0;
+
+	// Find all spawn spots
+	CBaseEntity *pSpot = nullptr;
+
+	if (mp_teamspawn.GetBool())
+	{
+		// try to find team spawn
+		int team = pPlayer->pev->team;
+		if (g_pGameRules->IsTeamplay()) {
+			team = g_pGameRules->GetTeamIndex(pPlayer->TeamID());
+		}
+
+
+		while ((pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch")))
+		{
+			if (team != pSpot->pev->team)
+				continue;
+
+			spotInfos[spotsCount].pSpot = pSpot;
+			spotInfos[spotsCount].flItemsWeight = CountEntitesInSphere(pSpot->pev->origin);
+			spotInfos[spotsCount].nValidity = IsSpawnPointValid(pPlayer, pSpot);
+			spotsCount++;
+
+			if (spotsCount == MAX_SPOTS)
+				break;
+		}
+	}
+
+	if (spotsCount == 0)
+	{
+		// Not using team spawns or not found any
+		while ((pSpot = UTIL_FindEntityByClassname(pSpot, "info_player_deathmatch")))
+		{
+			spotInfos[spotsCount].pSpot = pSpot;
+			spotInfos[spotsCount].flItemsWeight = CountEntitesInSphere(pSpot->pev->origin);
+			spotInfos[spotsCount].nValidity = IsSpawnPointValid(pPlayer, pSpot);
+			spotsCount++;
+
+			if (spotsCount == MAX_SPOTS)
+				break;
+		}
+	}
+
+	// Sort them
+	int validSpots = SortSpots(spotInfos, spotsCount);
+	int limit = validSpots;
+
+	if (limit == 0)
+		limit = spotsCount;
+	else if (limit > 10 && (rand() % 3) != 0)
+		limit = 10;
+
+	int take = rand() % limit;
+
+	if (spotInfos[take].nValidity == SpawnPointValidity::HasPlayers)
+		ClearSpawn(spotInfos[take].pSpot, pPlayer->edict());
+
+	return spotInfos[take].pSpot;
+}
+
+edict_t *EntSelectSpawnPoint(CBasePlayer *pPlayer)
+{
+	CBaseEntity *pSpot = nullptr;
+
+	pSpot = EntSelectSpawnPointFair(pPlayer);
+
+	if (!pSpot)
+	{
+		// If startspot is set, (re)spawn there.
+		if (FStringNull(gpGlobals->startspot) || !strlen(STRING(gpGlobals->startspot)))
+		{
+			pSpot = UTIL_FindEntityByClassname(NULL, "info_player_start");
+		}
+		else
+		{
+			pSpot = UTIL_FindEntityByTargetname(NULL, STRING(gpGlobals->startspot));
+		}
+	}
+
 	if (FNullEnt(pSpot))
 	{
 		ALERT(at_error, "PutClientInServer: no info_player_start on level");
@@ -2945,6 +3168,7 @@ ReturnSpot:
 	}
 
 	g_pLastSpawn = pSpot;
+
 	return pSpot->edict();
 }
 

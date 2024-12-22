@@ -262,7 +262,7 @@ void CTripmineGrenade ::BeamBreakThink(void)
 	gpGlobals->trace_flags = FTRACE_SIMPLEBOX;
 	UTIL_TraceLine(pev->origin, m_vecEnd, dont_ignore_monsters, ENT(pev), &tr);
 
-	// ALERT( at_console, "%f : %f\n", tr.flFraction, m_flBeamLength );
+	// ALERT( at_console, "BeamBreakThink, %f : %f\n", tr.flFraction, m_flBeamLength );
 
 	// respawn detect.
 	if (!m_pBeam)
@@ -274,16 +274,18 @@ void CTripmineGrenade ::BeamBreakThink(void)
 
 	if (fabs(m_flBeamLength - tr.flFraction) > 0.001)
 	{
+		ALERT(at_console, "BeamBreakThink, (1)\n");
 		bBlowup = 1;
 	}
 	else
 	{
-		if (m_hOwner == NULL)
+		if (m_hOwner == NULL) {
 			bBlowup = 1;
-		else if (m_posOwner != m_hOwner->pev->origin)
+		} else if (m_posOwner != m_hOwner->pev->origin) {
 			bBlowup = 1;
-		else if (m_angleOwner != m_hOwner->pev->angles)
+		} else if (m_angleOwner != m_hOwner->pev->angles) {
 			bBlowup = 1;
+		}
 	}
 
 	if (bBlowup)
