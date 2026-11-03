@@ -26,12 +26,6 @@
 namespace
 {
 
-//! Anchors, the values of bhl::sb::E_HAlign and bhl::sb::E_VAlign
-constexpr int ANCHOR_AUTO = 0;
-constexpr int ANCHOR_START = 1; //!< Left or top edge
-constexpr int ANCHOR_CENTER = 2;
-constexpr int ANCHOR_END = 3; //!< Right or bottom edge
-
 //! Side zones of the numbers row in widths of a digit: offset 10, suit icon 2 and number 3 of the armor
 constexpr int NUMBERS_ROW_DIGITS = 15;
 
@@ -57,80 +51,30 @@ struct NumbersRow
 	int iTall = 0;
 	int iLeft = 0; //!< Right edge of the health and armor numbers
 	int iRight = 0; //!< Left edge of the ammo numbers
-
-	//! Width between the side zones
-	int GetFree(int gap) const { return (iRight - gap) - (iLeft + gap); }
-};
-
-//! Where the position of an element comes from
-struct PlaceInput
-{
-	bhl::sb::E_Place place = bhl::sb::E_Place::Screen;
-	int x = 0, y = 0; //!< Wire positions, 1/8192 of the screen
-	int hAnchor = ANCHOR_AUTO;
-	int vAnchor = ANCHOR_AUTO;
-	int gap = 0;
-};
-
-struct LayoutNode
-{
-	bool bValid = false;
-	bhl::sb::E_Place place = bhl::sb::E_Place::Screen;
-	int iParent = -1;
-};
-
-enum class E_LayoutVisit
-{
-	New,
-	Active,
-	Placed,
-	Unplaced,
-};
-
-struct MeterLayout
-{
-	bool bDots = false;
-	int iWide = 0;
-	int iFillWide = 0; //!< 0 when cur is 0
-};
-
-struct StripLayout
-{
-	int iCellWide = 0;
-	int iShown = 0; //!< 0 without cells
-	int iFirst = 0;
-	int iWide = 0;
-};
-
-struct RingLayout
-{
-	int iDots = 0;
-	int iFilled = 0;
-	int iSize = 0; //!< Width and height of the ring
 };
 
 //! Resolves the auto anchor by the position, as set_hudmessage does
 int GetAnchor(int pos, int anchor)
 {
-	if (anchor != ANCHOR_AUTO)
+	if (anchor != bhl::sb::ANCHOR_AUTO)
 		return anchor;
 
 	if (pos == bhl::sb::POS_CENTER)
-		return ANCHOR_CENTER;
+		return bhl::sb::ANCHOR_CENTER;
 
-	return pos < 0 ? ANCHOR_END : ANCHOR_START;
+	return pos < 0 ? bhl::sb::ANCHOR_END : bhl::sb::ANCHOR_START;
 }
 
 //! Horizontal anchor of a placed box: the side of the box that stays when its width changes
-int GetBoxAnchor(const PlaceInput &in)
+int GetBoxAnchor(const CScoreboardData::Element &el)
 {
-	if (in.place == bhl::sb::E_Place::ParentLeft)
-		return ANCHOR_END;
+	if (el.place == bhl::sb::E_Place::ParentLeft)
+		return bhl::sb::ANCHOR_END;
 
-	if (in.place == bhl::sb::E_Place::ParentRight)
-		return ANCHOR_START;
+	if (el.place == bhl::sb::E_Place::ParentRight)
+		return bhl::sb::ANCHOR_START;
 
-	return GetAnchor(in.x, in.hAnchor);
+	return GetAnchor(el.x, el.hAlign);
 }
 
 //! Start of a box on an axis: the reference point of the position with the box's anchor on it
@@ -147,9 +91,9 @@ int PlaceOnAxis(int pos, int anchor, int screenSize, int size)
 
 	switch (GetAnchor(pos, anchor))
 	{
-	case ANCHOR_CENTER:
+	case bhl::sb::ANCHOR_CENTER:
 		return ref - size / 2;
-	case ANCHOR_END:
+	case bhl::sb::ANCHOR_END:
 		return ref - size;
 	default:
 		return ref;
@@ -167,32 +111,33 @@ int MoveInside(int pos, int size, int screenSize)
 
 /**
  * Places a box of box.wide x box.tall and moves it inside the screen.
+ * @param	gap		P(el.iGap)
  * @param	parent	Placed box of the parent, used by the parent places
  */
-void PlaceBox(const PlaceInput &in, const Box &parent, const NumbersRow &row, int screenWide, int screenTall, Box &box)
+void PlaceBox(const CScoreboardData::Element &el, int gap, const Box &parent, const NumbersRow &row, int screenWide, int screenTall, Box &box)
 {
-	switch (in.place)
+	switch (el.place)
 	{
 	case bhl::sb::E_Place::ParentLeft:
 	case bhl::sb::E_Place::ParentRight:
-		box.x = in.place == bhl::sb::E_Place::ParentLeft ? parent.x - in.gap - box.wide : parent.x + parent.wide + in.gap;
+		box.x = el.place == bhl::sb::E_Place::ParentLeft ? parent.x - gap - box.wide : parent.x + parent.wide + gap;
 		box.y = parent.y + (parent.tall - box.tall) / 2;
 		break;
 	case bhl::sb::E_Place::Parent:
-		box.x = PlaceOnAxis(in.x, in.hAnchor, screenWide, box.wide);
-		box.y = in.vAnchor == ANCHOR_END ? parent.y - in.gap - box.tall : parent.y + parent.tall + in.gap;
+		box.x = PlaceOnAxis(el.x, el.hAlign, screenWide, box.wide);
+		box.y = el.vAlign == bhl::sb::ANCHOR_END ? parent.y - gap - box.tall : parent.y + parent.tall + gap;
 		break;
 	case bhl::sb::E_Place::NumbersRow:
 	{
 		// The zones are tested where the box will be drawn
-		box.x = MoveInside(PlaceOnAxis(in.x, in.hAnchor, screenWide, box.wide), box.wide, screenWide);
-		bool lifted = box.x < row.iLeft + in.gap || box.x + box.wide > row.iRight - in.gap;
-		box.y = lifted ? row.iTop - in.gap - box.tall : row.iTop + (row.iTall - box.tall) / 2;
+		box.x = MoveInside(PlaceOnAxis(el.x, el.hAlign, screenWide, box.wide), box.wide, screenWide);
+		bool lifted = box.x < row.iLeft + gap || box.x + box.wide > row.iRight - gap;
+		box.y = lifted ? row.iTop - gap - box.tall : row.iTop + (row.iTall - box.tall) / 2;
 		break;
 	}
 	default:
-		box.x = PlaceOnAxis(in.x, in.hAnchor, screenWide, box.wide);
-		box.y = PlaceOnAxis(in.y, in.vAnchor, screenTall, box.tall);
+		box.x = PlaceOnAxis(el.x, el.hAlign, screenWide, box.wide);
+		box.y = PlaceOnAxis(el.y, el.vAlign, screenTall, box.tall);
 		break;
 	}
 
@@ -200,130 +145,35 @@ void PlaceBox(const PlaceInput &in, const Box &parent, const NumbersRow &row, in
 	box.y = MoveInside(box.y, box.tall, screenTall);
 }
 
-bool VisitLayoutNode(const LayoutNode *nodes, E_LayoutVisit *visits, int id, int *order, int &count)
-{
-	if (visits[id] != E_LayoutVisit::New)
-		return visits[id] == E_LayoutVisit::Placed;
-
-	const LayoutNode &node = nodes[id];
-	bool placed = node.bValid && !bhl::sb::IsBannerPlace(node.place);
-	visits[id] = E_LayoutVisit::Active;
-
-	// A parent that is still active is the element itself or closes a cycle
-	if (placed && bhl::sb::IsParentPlace(node.place))
-		placed = node.iParent >= 0 && node.iParent < bhl::sb::MAX_ELEMENTS && VisitLayoutNode(nodes, visits, node.iParent, order, count);
-
-	visits[id] = placed ? E_LayoutVisit::Placed : E_LayoutVisit::Unplaced;
-
-	if (placed)
-		order[count++] = id;
-
-	return placed;
-}
-
 /**
- * Orders the elements parents first (8.4). Leaves out the unplaced ones: undefined, banner places,
- * and parent places whose parent is undefined, has a banner place, is the element itself, is in a
- * cycle or is unplaced.
- * @param	nodes	MAX_ELEMENTS nodes by element id
+ * Orders the elements parents first (8.4). Leaves out Boxes, which are never parents: they cover their group
+ * after the layout. Leaves out the unplaced ones too: undefined, banner places, and parent places whose parent
+ * is undefined, a Box, has a banner place, is the element itself, is in a cycle or is unplaced.
  * @param	order	Receives the ids of the placed elements
  * @return	Number of placed elements
  */
-int GetLayoutOrder(const LayoutNode *nodes, int *order)
+int GetLayoutOrder(const CScoreboardData &data, int *order)
 {
-	E_LayoutVisit visits[bhl::sb::MAX_ELEMENTS] = {};
+	bool placed[bhl::sb::MAX_ELEMENTS] = {};
 	int count = 0;
 
-	for (int id = 0; id < bhl::sb::MAX_ELEMENTS; id++)
-		VisitLayoutNode(nodes, visits, id, order, count);
+	// Each pass places the elements whose parent is placed: a chain has at most MAX_ELEMENTS links
+	for (int pass = 0; pass < bhl::sb::MAX_ELEMENTS; pass++)
+	{
+		for (int id = 0; id < bhl::sb::MAX_ELEMENTS; id++)
+		{
+			const CScoreboardData::Element &el = data.GetElement(id);
+			bool hasParent = el.iParent >= 0 && el.iParent < bhl::sb::MAX_ELEMENTS && placed[el.iParent];
+
+			if (!placed[id] && el.bValid && el.kind != bhl::sb::E_ElementKind::Box && !bhl::sb::IsBannerPlace(el.place) && (!bhl::sb::IsParentPlace(el.place) || hasParent))
+			{
+				placed[id] = true;
+				order[count++] = id;
+			}
+		}
+	}
 
 	return count;
-}
-
-/**
- * Layout of a Meter with a Progress value (8.7).
- * @param	cur			Clamped to [0, maxValue]
- * @param	maxValue	Progress max, above 0
- * @param	dot			max(2, P(dot_size))
- * @param	barWide		P(bar_wide), 0 for the length of the dots
- */
-MeterLayout LayoutMeter(int cur, int maxValue, int dots, int dot, int dotGap, int barWide)
-{
-	MeterLayout out;
-	out.bDots = dots > 0 && maxValue <= dots;
-
-	if (out.bDots)
-	{
-		out.iWide = maxValue * dot + (maxValue - 1) * dotGap;
-		return out;
-	}
-
-	int barDots = dots > 0 ? dots : METER_BAR_DOTS;
-	out.iWide = barWide > 0 ? barWide : barDots * dot + (barDots - 1) * dotGap;
-
-	if (cur > 0)
-		out.iFillWide = std::max(static_cast<int>(static_cast<long long>(out.iWide) * cur / maxValue), dot);
-
-	return out;
-}
-
-/**
- * Layout of a Strip (8.8). Without cells the strip has no width.
- * @param	cur			Current cell [0, count)
- * @param	cellWide	P(cell_wide)
- * @param	cellMinWide	P(cell_min_wide) of cell_min_wide limited to cell_wide
- * @param	maxWide		P(max_wide), or the screen width for 0
- * @param	free		Width between the side zones of the numbers row, used only on it
- * @param	markerWide	Width of the window markers in the element font
- */
-StripLayout LayoutStrip(int count, int cur, int cellWide, int cellMinWide, int gap, int maxWide, bool numbersRow, int free, int markerWide)
-{
-	StripLayout out;
-
-	if (count <= 0)
-		return out;
-
-	int cellMin = std::max(1, cellMinWide);
-	int cellMax = std::max(cellMin, cellWide);
-	int minWide = count * cellMin + (count - 1) * gap;
-	bool lifted = numbersRow && minWide > free && free < maxWide;
-	int limit = numbersRow && !lifted ? std::min(maxWide, free) : maxWide;
-
-	out.iCellWide = std::clamp((limit - (count - 1) * gap) / count, cellMin, cellMax);
-	out.iShown = count;
-
-	if (minWide > limit)
-	{
-		int marker = markerWide + gap;
-		out.iShown = std::clamp((limit - 2 * marker + gap) / std::max(cellMin + gap, 1), 1, count);
-		out.iFirst = std::clamp(cur - out.iShown / 2, 0, count - out.iShown);
-	}
-
-	out.iWide = out.iShown * out.iCellWide + (out.iShown - 1) * gap;
-	return out;
-}
-
-/**
- * Layout of a Meter with form 1 (8.7): dots on a circle, a dot per unit while max fits the dots,
- * else the dots param (10 for 0) and filled = round(cur * dots / max).
- * @param	dot	max(2, P(dot_size))
- */
-RingLayout LayoutRing(int cur, int maxValue, int dots, int dot, int dotGap)
-{
-	RingLayout out;
-	out.iDots = maxValue <= dots ? maxValue : (dots > 0 ? dots : METER_BAR_DOTS);
-	out.iFilled = out.iDots == maxValue ? cur : static_cast<int>((2LL * cur * out.iDots + maxValue) / (2LL * maxValue));
-	out.iSize = std::max(3 * dot, static_cast<int>(std::ceil(out.iDots * (dot + dotGap) / PI)) + dot);
-	return out;
-}
-
-//! Position of dot i of a ring of size x size in the box of the ring: dot 0 on top, clockwise
-void GetRingDot(int size, int dot, int i, int count, int &x, int &y)
-{
-	double angle = -PI / 2 + 2 * PI * i / count;
-	double center = (size - dot) / 2.0;
-	x = static_cast<int>(std::floor(center + center * std::cos(angle) + 0.5));
-	y = static_cast<int>(std::floor(center + center * std::sin(angle) + 0.5));
 }
 
 /**
@@ -421,48 +271,26 @@ int SplitColumns(wchar_t *text, int *starts, int maxColumns)
 	return count;
 }
 
-//! True if text has only digits, spaces and + - . , / : % (a right-aligned Board column)
-bool IsNumericText(const wchar_t *text)
+//! Length of count rows, cells or dots of size pixels with gap between them
+int GetStackLength(int count, int size, int gap)
 {
-	return wcsspn(text, L"0123456789 +-.,/:%") == wcslen(text);
+	return count > 0 ? count * size + (count - 1) * gap : 0;
 }
 
-//! Part of a Board row that its fill bar covers: value / maxValue, 0 for value <= 0
-float GetFillFraction(int value, int maxValue)
-{
-	return value > 0 && maxValue > 0 ? std::min(static_cast<float>(value) / maxValue, 1.0f) : 0.0f;
-}
-
-//! Height of count rows of tall pixels with gap between them
-int GetStackTall(int count, int tall, int gap)
-{
-	return count > 0 ? count * tall + (count - 1) * gap : 0;
-}
-
-//! Offset of a line of wide pixels in a box of boxWide by the horizontal anchor of the box
-int AlignInBox(int anchor, int boxWide, int wide)
-{
-	if (anchor == ANCHOR_END)
-		return boxWide - wide;
-
-	if (anchor == ANCHOR_CENTER)
-		return (boxWide - wide) / 2;
-
-	return 0;
-}
-
-//! True if the parent chain of element id reaches root, id included
-bool IsInGroup(const LayoutNode *nodes, int id, int root)
+//! True if the parent chain of element id reaches root, id included. A Box ends the chain like an undefined element.
+bool IsInGroup(const CScoreboardData &data, int id, int root)
 {
 	for (int i = 0; i < bhl::sb::MAX_ELEMENTS && id >= 0 && id < bhl::sb::MAX_ELEMENTS; i++)
 	{
+		const CScoreboardData::Element &el = data.GetElement(id);
+
 		if (id == root)
 			return true;
 
-		if (!nodes[id].bValid || !bhl::sb::IsParentPlace(nodes[id].place))
+		if (!el.bValid || el.kind == bhl::sb::E_ElementKind::Box || !bhl::sb::IsParentPlace(el.place))
 			return false;
 
-		id = nodes[id].iParent;
+		id = el.iParent;
 	}
 
 	return false;
@@ -502,12 +330,6 @@ float GetFlashFactor(float elapsed, int flashMs)
 	return std::max(1.0f - elapsed * 1000.0f / flashMs, 0.0f);
 }
 
-//! A color component flashed toward white by k
-int FlashComponent(int value, float k)
-{
-	return k > 0 ? value + static_cast<int>((255 - value) * k + 0.5f) : value;
-}
-
 //! warn_pulse_ms factor of the alpha while warning: 1 at the start of the warning
 float GetPulseFactor(float elapsed, int periodMs)
 {
@@ -515,12 +337,6 @@ float GetPulseFactor(float elapsed, int periodMs)
 		return 1.0f;
 
 	return 0.55f + 0.45f * static_cast<float>(std::cos(2 * PI * elapsed * 1000.0 / periodMs));
-}
-
-//! True while hold_ms keeps the element drawn after its appearance or change; always without hold_ms
-bool IsHoldRunning(float elapsed, int holdMs)
-{
-	return holdMs <= 0 || elapsed * 1000.0f < holdMs;
 }
 
 //! Alpha of a Feed line (8.15): fades in over fadeMs from its start and out over the last fadeMs of its life
@@ -540,25 +356,25 @@ float GetLineAlpha(float age, float life, int fadeMs)
  * The line an announcer Feed (queue 1) shows: lines in arrival order, each from max(arrival, end of the
  * previous one) for its life. anchorSeq, anchorStart and anchorEnd keep the last started line (all 0 for none),
  * so evicting older lines from the ring doesn't move the later ones: lines before it are skipped.
- * @param	seq	Sequence numbers of the lines, growing
+ * @param	lines	In arrival order, iSeq growing
  * @return	Line index or -1; anchorStart is then its start
  */
-int FindAnnouncerLine(const int *seq, const float *arrival, const float *life, int count, float now, int &anchorSeq, float &anchorStart, float &anchorEnd)
+int FindAnnouncerLine(const CScoreboardData::HudLine *const *lines, const float *life, int count, float now, int &anchorSeq, float &anchorStart, float &anchorEnd)
 {
 	float end = anchorEnd;
 
 	for (int i = 0; i < count; i++)
 	{
-		if (seq[i] < anchorSeq)
+		if (lines[i]->iSeq < anchorSeq)
 			continue;
 
-		float lineStart = seq[i] == anchorSeq ? anchorStart : std::max(arrival[i], end);
+		float lineStart = lines[i]->iSeq == anchorSeq ? anchorStart : std::max(lines[i]->flTime, end);
 		end = lineStart + life[i];
 
 		if (lineStart > now)
 			break;
 
-		anchorSeq = seq[i];
+		anchorSeq = lines[i]->iSeq;
 		anchorStart = lineStart;
 		anchorEnd = end;
 
@@ -585,13 +401,9 @@ unsigned int HashText(unsigned int hash, const wchar_t *text)
 	return HashInt(hash, 0);
 }
 
-}
-
 //----------------------------------------------------------------------------------------------------
 // Drawing helpers
 //----------------------------------------------------------------------------------------------------
-namespace
-{
 
 constexpr int CIRCLE_TEXTURE_SIZE = 64;
 
@@ -599,9 +411,6 @@ constexpr wchar_t MARKER_LEFT[] = L"\u2039";
 constexpr wchar_t MARKER_RIGHT[] = L"\u203A";
 constexpr wchar_t BOARD_SEPARATOR = 0x2026;
 constexpr wchar_t TRACK_FORMAT[] = L"\u00D7%d";
-
-//! Color slots of the template variants
-constexpr unsigned int VARIANT_SLOTS = (1u << bhl::sb::MAX_VARIANTS) - 1;
 
 //! P(v): proportional units of a 640x480 screen to pixels
 int Scaled(int value)
@@ -700,12 +509,20 @@ Color ToColor(const unsigned char *rgba)
 
 Color FlashColor(Color color, float k)
 {
-	return Color(FlashComponent(color.r(), k), FlashComponent(color.g(), k), FlashComponent(color.b(), k), color.a());
+	auto flash = [k](int value) { return k > 0 ? value + static_cast<int>((255 - value) * k + 0.5f) : value; };
+	return Color(flash(color.r()), flash(color.g()), flash(color.b()), color.a());
 }
 
-int ToPartAlpha(float alpha)
+//! The sprite of name, looked up only when name isn't cachedName: failures are cached too
+int GetCachedSprite(const char *name, char (&cachedName)[bhl::sb::MAX_TEXT_LEN + 1], int &cachedSprite)
 {
-	return static_cast<int>(alpha * 255 + 0.5f);
+	if (strcmp(cachedName, name))
+	{
+		V_strcpy_safe(cachedName, name);
+		cachedSprite = GetScoreSpriteIndex(name);
+	}
+
+	return cachedSprite;
 }
 
 }
@@ -738,9 +555,7 @@ void CHudServerPanel::VidInit()
 	for (int id = 0; id < bhl::sb::MAX_ELEMENTS; id++)
 	{
 		m_szIconSprites[id][0] = '\0';
-		m_iIconSprites[id] = -1;
 		m_Effects[id] = EffectState();
-		m_Anchors[id] = AnnouncerAnchor();
 
 		// The rows keep sprite indexes
 		m_States[id].bDrawn = false;
@@ -785,19 +600,18 @@ bool CHudServerPanel::UpdateLayout()
 	for (ElementState &state : m_States)
 		state.bDrawn = false;
 
-	const CScoreboardData &data = CScoreboardData::Get();
 	float time = CScoreboardData::GetTime();
 
 	// No flash for what a Reset or full sync changes, and the announcers start over
-	if (m_iResetCount != data.GetResetCount())
+	if (m_iResetCount != m_Data.GetResetCount())
 	{
-		m_iResetCount = data.GetResetCount();
+		m_iResetCount = m_Data.GetResetCount();
 
 		for (EffectState &fx : m_Effects)
+		{
 			fx.bHasSignature = false;
-
-		for (AnnouncerAnchor &anchor : m_Anchors)
-			anchor = AnnouncerAnchor();
+			fx.anchor = AnnouncerAnchor();
+		}
 	}
 
 	if (!CScoreboardData::IsHudEnabled() || hud_draw.GetFloat() <= 0 || gHUD.m_iIntermission || (gHUD.m_iHideHUDDisplay & HIDEHUD_ALL))
@@ -806,7 +620,7 @@ bool CHudServerPanel::UpdateLayout()
 		return false;
 	}
 
-	if (data.GetVisibleMask() == 0 && !IsFading())
+	if (m_Data.GetVisibleMask() == 0 && !IsFading())
 	{
 		StopEffects(false);
 		return false;
@@ -815,23 +629,19 @@ bool CHudServerPanel::UpdateLayout()
 	UpdateStripSprites();
 	SaveGhosts();
 
-	LayoutNode nodes[bhl::sb::MAX_ELEMENTS];
 	bool isParent[bhl::sb::MAX_ELEMENTS] = {};
 	bool isPresent[bhl::sb::MAX_ELEMENTS] = {};
 
 	for (int id = 0; id < bhl::sb::MAX_ELEMENTS; id++)
 	{
-		const CScoreboardData::Element &el = data.GetElement(id);
-		nodes[id].bValid = el.bValid && el.kind != bhl::sb::E_ElementKind::Box; // A Box is never a parent, it covers its group after the layout
-		nodes[id].place = el.place;
-		nodes[id].iParent = el.iParent;
+		const CScoreboardData::Element &el = m_Data.GetElement(id);
 
 		if (el.bValid && bhl::sb::IsParentPlace(el.place) && el.iParent >= 0 && el.iParent < bhl::sb::MAX_ELEMENTS)
 			isParent[el.iParent] = true;
 	}
 
 	int order[bhl::sb::MAX_ELEMENTS];
-	int count = GetLayoutOrder(nodes, order);
+	int count = GetLayoutOrder(m_Data, order);
 	int originX, originY, screenWide, screenTall;
 	GetBounds(originX, originY, screenWide, screenTall);
 
@@ -841,55 +651,37 @@ bool CHudServerPanel::UpdateLayout()
 	for (int i = 0; i < count; i++)
 	{
 		int id = order[i];
-		const CScoreboardData::Element &el = data.GetElement(id);
+		const CScoreboardData::Element &el = m_Data.GetElement(id);
 		ElementState &state = m_States[id];
 		CScoreboardData::Subject subject;
 
 		// The subject is needed even when the element is hidden: a parent's box counts anyway
-		bool hasSubject = data.GetElementSubject(id, subject);
-		bool isShown = hasSubject && data.IsElementVisible(id) && !(el.HasFlag(bhl::sb::E_ElementFlags::NoScoreboard) && isScoreboardOpen);
+		bool hasSubject = m_Data.GetElementSubject(id, subject);
+		bool isShown = hasSubject && m_Data.IsElementVisible(id) && !(el.HasFlag(bhl::sb::E_ElementFlags::NoScoreboard) && isScoreboardOpen);
 
 		if (!isShown && !isParent[id])
 			continue;
 
-		PlaceInput in;
-		in.place = el.place;
-		in.x = el.x;
-		in.y = el.y;
-		in.hAnchor = static_cast<int>(el.hAlign);
-		in.vAnchor = static_cast<int>(el.vAlign);
-		in.gap = Scaled(el.iGap);
-
-		int freeWide = el.place == bhl::sb::E_Place::NumbersRow ? row.GetFree(in.gap) : INT_MAX;
+		int gap = Scaled(el.iGap);
+		int freeWide = el.place == bhl::sb::E_Place::NumbersRow ? (row.iRight - gap) - (row.iLeft + gap) : INT_MAX;
 		bool hasContent = MeasureElement(id, el, subject, freeWide, state);
 
-		Box parent;
-
-		if (bhl::sb::IsParentPlace(el.place))
-		{
-			const ElementState &parentState = m_States[el.iParent];
-			parent.x = parentState.x;
-			parent.y = parentState.y;
-			parent.wide = parentState.wide;
-			parent.tall = parentState.tall;
-		}
-
-		Box box;
-		box.wide = state.wide;
-		box.tall = state.tall;
-		PlaceBox(in, parent, row, screenWide, screenTall, box);
+		// Only the parent places read the parent's box
+		const ElementState &parent = bhl::sb::IsParentPlace(el.place) ? m_States[el.iParent] : state;
+		Box box = { 0, 0, state.wide, state.tall };
+		PlaceBox(el, gap, { parent.x, parent.y, parent.wide, parent.tall }, row, screenWide, screenTall, box);
 
 		state.x = box.x;
 		state.y = box.y;
 		isPresent[id] = isShown && hasContent;
-		PlaceContent(el, GetBoxAnchor(in), state);
+		PlaceContent(el, state);
 	}
 
 	bool isAnyDrawn = false;
 
 	for (int id = 0; id < bhl::sb::MAX_ELEMENTS; id++)
 	{
-		const CScoreboardData::Element &el = data.GetElement(id);
+		const CScoreboardData::Element &el = m_Data.GetElement(id);
 
 		if (el.kind != bhl::sb::E_ElementKind::Box && UpdateEffects(id, el, isPresent[id], time))
 			isAnyDrawn = true;
@@ -897,7 +689,7 @@ bool CHudServerPanel::UpdateLayout()
 
 	for (int id = 0; id < bhl::sb::MAX_ELEMENTS; id++)
 	{
-		const CScoreboardData::Element &el = data.GetElement(id);
+		const CScoreboardData::Element &el = m_Data.GetElement(id);
 
 		if (el.kind != bhl::sb::E_ElementKind::Box)
 			continue;
@@ -910,7 +702,7 @@ bool CHudServerPanel::UpdateLayout()
 		{
 			const ElementState &memberState = m_States[member];
 
-			if (!memberState.bDrawn || memberState.kind == bhl::sb::E_ElementKind::Box || !IsInGroup(nodes, member, el.iParent))
+			if (!memberState.bDrawn || memberState.kind == bhl::sb::E_ElementKind::Box || !IsInGroup(m_Data, member, el.iParent))
 				continue;
 
 			AddDrawnBounds(member, memberState, bounds);
@@ -921,7 +713,7 @@ bool CHudServerPanel::UpdateLayout()
 		ElementState &state = m_States[id];
 		CScoreboardData::Subject subject;
 		bool isPlaced = bhl::sb::IsParentPlace(el.place) && std::find(order, order + count, el.iParent) != order + count;
-		bool isPresentBox = isPlaced && data.GetElementSubject(id, subject) && data.IsElementVisible(id)
+		bool isPresentBox = isPlaced && m_Data.GetElementSubject(id, subject) && m_Data.IsElementVisible(id)
 		    && !(el.HasFlag(bhl::sb::E_ElementFlags::NoScoreboard) && isScoreboardOpen) && bounds[0] < bounds[2];
 
 		if (isPresentBox)
@@ -949,32 +741,19 @@ bool CHudServerPanel::MeasureElement(int id, const CScoreboardData::Element &el,
 	int font = static_cast<int>(el.font);
 	Color rgb = el.HasFlag(bhl::sb::E_ElementFlags::HudColor) ? gHUD.GetHudColor(HudPart::Common, 0) : Color(el.r, el.g, el.b, 255);
 
+	state = ElementState();
 	state.kind = el.kind;
 	state.font = m_Fonts[font < bhl::sb::FONT_COUNT ? font : 0];
 	state.iFontTall = vgui2::surface()->GetFontTall(state.font);
 	state.color = Color(rgb.r(), rgb.g(), rgb.b(), el.a);
-	state.bGhost = false;
-	state.flAlpha = 1;
-	state.flFlash = 0;
-	state.bWarn = false;
-	state.wszText[0] = L'\0';
-	state.bHasText = false;
-	state.iTextWide = 0;
-	state.iCur = 0;
-	state.iMax = 0;
-	state.bRing = false;
-	state.bTrack = false;
-	state.iSprite = -1;
-	state.wide = 0;
 	state.tall = state.iFontTall;
 
 	switch (el.kind)
 	{
 	case bhl::sb::E_ElementKind::Text:
-		state.bHasText = CScoreboardData::Get().GetElementText(id, subject, state.wszText, sizeof(state.wszText));
-		state.iTextWide = state.bHasText ? GetTextWide(state.font, state.wszText) : 0;
+		state.iTextWide = m_Data.GetElementText(id, subject, state.wszText, sizeof(state.wszText)) ? GetTextWide(state.font, state.wszText) : 0;
 		state.wide = state.iTextWide;
-		return state.bHasText;
+		return state.wszText[0] != L'\0';
 	case bhl::sb::E_ElementKind::Meter:
 		return MeasureMeter(id, el, subject, state);
 	case bhl::sb::E_ElementKind::Strip:
@@ -992,52 +771,49 @@ bool CHudServerPanel::MeasureElement(int id, const CScoreboardData::Element &el,
 
 bool CHudServerPanel::MeasureMeter(int id, const CScoreboardData::Element &el, const CScoreboardData::Subject &subject, ElementState &state)
 {
-	const CScoreboardData &data = CScoreboardData::Get();
 	CScoreboardData::Value value;
 	int dot = std::max(2, Scaled(GetParam(el, bhl::sb::E_Param::DotSize)));
 	state.tall = dot;
 
-	if (!data.GetElementValue(id, subject, value) || value.type != bhl::sb::E_ValueType::Progress || value.iMax <= 0)
+	if (!m_Data.GetElementValue(id, subject, value) || value.type != bhl::sb::E_ValueType::Progress || value.iMax <= 0)
 		return false;
 
 	state.iMax = value.iMax;
 	state.iCur = clamp(value.iValue, 0, value.iMax);
 	state.iDotGap = Scaled(GetParam(el, bhl::sb::E_Param::DotGap));
 
-	MeterLayout meter = LayoutMeter(state.iCur, state.iMax, GetParam(el, bhl::sb::E_Param::Dots), dot, state.iDotGap, Scaled(GetParam(el, bhl::sb::E_Param::BarWide)));
-	state.bDots = meter.bDots;
-	state.wide = meter.iWide;
-	state.iFillWide = meter.iFillWide;
+	int dots = GetParam(el, bhl::sb::E_Param::Dots);
+	int barDots = dots > 0 ? dots : METER_BAR_DOTS;
+	int barWide = Scaled(GetParam(el, bhl::sb::E_Param::BarWide));
+	state.bDots = dots > 0 && state.iMax <= dots;
+	state.wide = !state.bDots && barWide > 0 ? barWide : GetStackLength(state.bDots ? state.iMax : barDots, dot, state.iDotGap);
+	state.iFillWide = state.iCur > 0 ? std::max(static_cast<int>(static_cast<long long>(state.wide) * state.iCur / state.iMax), dot) : 0;
 
+	// Form 1 (8.7): dots on a circle, a dot per unit while max fits the dots, else barDots of them filled to round(cur * barDots / max)
 	if (GetParam(el, bhl::sb::E_Param::Form) == static_cast<int>(bhl::sb::E_MeterForm::Ring))
 	{
-		RingLayout ring = LayoutRing(state.iCur, state.iMax, GetParam(el, bhl::sb::E_Param::Dots), dot, state.iDotGap);
 		state.bRing = true;
-		state.bDots = ring.iDots == state.iMax;
 		state.iDotSize = dot;
-		state.iRingDots = ring.iDots;
-		state.iRingFilled = ring.iFilled;
-		state.wide = ring.iSize;
-		state.tall = ring.iSize;
+		state.iRingDots = state.iMax <= dots ? state.iMax : barDots;
+		state.bDots = state.iRingDots == state.iMax;
+		state.iRingFilled = state.bDots ? state.iCur : static_cast<int>((2LL * state.iCur * state.iRingDots + state.iMax) / (2LL * state.iMax));
+		state.wide = std::max(3 * dot, static_cast<int>(std::ceil(state.iRingDots * (dot + state.iDotGap) / PI)) + dot);
+		state.tall = state.wide;
 	}
 
 	int counter = GetParam(el, bhl::sb::E_Param::Counter);
 
 	if (counter == 2 || (counter == 1 && !state.bDots))
-	{
-		state.bHasText = data.GetElementText(id, subject, state.wszText, sizeof(state.wszText));
-		state.iTextWide = state.bHasText ? GetTextWide(state.font, state.wszText) : 0;
-	}
+		state.iTextWide = m_Data.GetElementText(id, subject, state.wszText, sizeof(state.wszText)) ? GetTextWide(state.font, state.wszText) : 0;
 
 	return true;
 }
 
 bool CHudServerPanel::MeasureStrip(int id, const CScoreboardData::Element &el, const CScoreboardData::Subject &subject, int freeWide, ElementState &state)
 {
-	const CScoreboardData &data = CScoreboardData::Get();
-	const CScoreboardData::List *list = el.szList[0] ? data.FindList(el.szList) : nullptr;
+	const CScoreboardData::List *list = el.szList[0] ? m_Data.FindList(el.szList) : nullptr;
 	CScoreboardData::Value value;
-	bool hasValue = data.GetElementValue(id, subject, value);
+	bool hasValue = m_Data.GetElementValue(id, subject, value);
 	int count = 0;
 
 	// A list key without such a list counts as no list (8.8)
@@ -1052,72 +828,81 @@ bool CHudServerPanel::MeasureStrip(int id, const CScoreboardData::Element &el, c
 	bool hasPosition = hasValue && value.GetNumber(position);
 
 	state.iMax = count;
-	state.iCur = count > 0 ? clamp(position, 1, count) - 1 : 0;
 	state.iCellGap = Scaled(GetParam(el, bhl::sb::E_Param::CellGap));
 	state.tall = Scaled(GetParam(el, bhl::sb::E_Param::CellTall));
 
+	// Without cells the strip has no width
+	if (count == 0)
+		return false;
+
+	state.iCur = clamp(position, 1, count) - 1;
+
 	int cellWide = GetParam(el, bhl::sb::E_Param::CellWide);
-	int cellMinWide = std::min(GetParam(el, bhl::sb::E_Param::CellMinWide), cellWide);
+	int cellMin = std::max(1, Scaled(std::min(GetParam(el, bhl::sb::E_Param::CellMinWide), cellWide)));
+	int cellMax = std::max(cellMin, Scaled(cellWide));
 	int maxWide = GetParam(el, bhl::sb::E_Param::MaxWide);
-	int markerWide = vgui2::surface()->GetCharacterWidth(state.font, MARKER_LEFT[0]);
+	int limit = maxWide > 0 ? Scaled(maxWide) : GetWide();
+	int minWide = count * cellMin + (count - 1) * state.iCellGap;
 
-	int maxWidePx = maxWide > 0 ? Scaled(maxWide) : GetWide();
-	StripLayout strip = LayoutStrip(count, state.iCur, Scaled(cellWide), Scaled(cellMinWide), state.iCellGap, maxWidePx, el.place == bhl::sb::E_Place::NumbersRow, freeWide, markerWide);
+	// On the numbers row the strip fits between the side zones unless it is lifted above them
+	if (el.place == bhl::sb::E_Place::NumbersRow && !(minWide > freeWide && freeWide < limit))
+		limit = std::min(limit, freeWide);
 
-	state.iCellWide = strip.iCellWide;
-	state.iShown = strip.iShown;
-	state.iFirst = strip.iFirst;
-	state.wide = strip.iWide;
-	state.bTrack = count > 0 && GetParam(el, bhl::sb::E_Param::Track) == 1;
+	state.iCellWide = std::clamp((limit - (count - 1) * state.iCellGap) / count, cellMin, cellMax);
+	state.iShown = count;
+
+	if (minWide > limit)
+	{
+		int marker = vgui2::surface()->GetCharacterWidth(state.font, MARKER_LEFT[0]) + state.iCellGap;
+		state.iShown = std::clamp((limit - 2 * marker + state.iCellGap) / std::max(cellMin + state.iCellGap, 1), 1, count);
+		state.iFirst = std::clamp(state.iCur - state.iShown / 2, 0, count - state.iShown);
+	}
+
+	state.wide = GetStackLength(state.iShown, state.iCellWide, state.iCellGap);
+	state.bTrack = GetParam(el, bhl::sb::E_Param::Track) == 1;
 
 	if (state.bTrack)
 		UpdateTrack(id, subject, count);
 
-	return count > 0 && hasPosition;
+	return hasPosition;
 }
 
 bool CHudServerPanel::MeasureIcon(int id, const CScoreboardData::Element &el, const CScoreboardData::Subject &subject, ElementState &state)
 {
-	const CScoreboardData &data = CScoreboardData::Get();
 	CScoreboardData::Value value;
 
 	// Without an Icon value the element has no content, not even its text (8.3, 8.9)
-	if (!data.GetElementValue(id, subject, value) || value.type != bhl::sb::E_ValueType::Icon)
+	if (!m_Data.GetElementValue(id, subject, value) || value.type != bhl::sb::E_ValueType::Icon)
 		return false;
 
 	int iconTall = GetParam(el, bhl::sb::E_Param::IconTall);
-	int sprite = GetIconSprite(id, value.szSprite);
+	int tall = iconTall > 0 ? Scaled(iconTall) : state.iFontTall;
+	int sprite = value.szSprite[0] ? GetCachedSprite(value.szSprite, m_szIconSprites[id], m_iIconSprites[id]) : -1;
 	const wrect_t &rc = GetScoreSpriteRect(sprite);
 
-	state.iIconTall = iconTall > 0 ? Scaled(iconTall) : state.iFontTall;
-
-	if (sprite != -1 && rc.GetWidth() > 0 && rc.GetHeight() > 0 && state.iIconTall > 0)
+	if (rc.GetWidth() > 0 && rc.GetHeight() > 0 && tall > 0)
 	{
 		state.iSprite = sprite;
-		state.iIconWide = rc.GetWidth() * state.iIconTall / rc.GetHeight();
+		state.iIconWide = rc.GetWidth() * tall / rc.GetHeight();
+		state.iIconTall = tall;
 	}
 
-	state.bHasText = data.GetElementText(id, subject, state.wszText, sizeof(state.wszText));
-	state.iTextWide = state.bHasText ? GetTextWide(state.font, state.wszText) : 0;
+	state.iTextWide = m_Data.GetElementText(id, subject, state.wszText, sizeof(state.wszText)) ? GetTextWide(state.font, state.wszText) : 0;
 
-	bool hasIcon = state.iSprite != -1;
-	int iconWide = hasIcon ? state.iIconWide : 0;
-	int gap = hasIcon && state.bHasText ? Scaled(GetParam(el, bhl::sb::E_Param::IconGap)) : 0;
-
-	state.wide = iconWide + gap + state.iTextWide;
-	state.tall = std::max(hasIcon ? state.iIconTall : 0, state.iFontTall);
-	return hasIcon || state.bHasText;
+	int gap = state.iSprite != -1 && state.wszText[0] ? Scaled(GetParam(el, bhl::sb::E_Param::IconGap)) : 0;
+	state.wide = state.iIconWide + gap + state.iTextWide;
+	state.tall = std::max(state.iIconTall, state.iFontTall);
+	return state.iSprite != -1 || state.wszText[0];
 }
 
 bool CHudServerPanel::MeasureBoard(int id, const CScoreboardData::Element &el, const CScoreboardData::Subject &subject, ElementState &state)
 {
-	const CScoreboardData &data = CScoreboardData::Get();
 	bool isList = el.szList[0] != '\0';
-	const CScoreboardData::List *list = isList ? data.FindList(el.szList) : nullptr;
+	const CScoreboardData::List *list = isList ? m_Data.FindList(el.szList) : nullptr;
 
 	// In list mode @value is the item of the list named by the value ref
 	bool hasValueList = isList && el.valueRef.builtin == bhl::sb::E_Builtin::None && el.valueRef.szKey[0];
-	const CScoreboardData::List *values = hasValueList ? data.FindList(el.valueRef.szKey) : nullptr;
+	const CScoreboardData::List *values = hasValueList ? m_Data.FindList(el.valueRef.szKey) : nullptr;
 
 	CScoreboardData::Subject entities[MAX_PLAYERS];
 	int count = 0;
@@ -1125,23 +910,18 @@ bool CHudServerPanel::MeasureBoard(int id, const CScoreboardData::Element &el, c
 
 	if (isList)
 	{
-		bhl::sb::TemplateValue select;
+		CScoreboardData::Value select;
 		int number = 0;
 		count = list ? list->iCount : 0;
 
-		if (subject.IsValid() && data.ResolveRef(el.selectRef, subject, id, select) && select.GetNumber(number) && number >= 1 && number <= count)
+		if (subject.IsValid() && m_Data.GetRefValue(el.selectRef, subject, id, select) && select.GetNumber(number) && number >= 1 && number <= count)
 			own = number - 1;
 	}
 	else
 	{
-		count = data.GetOrderedEntities(entities, MAX_PLAYERS);
-		CScoreboardData::Subject ranked = data.GetRankedEntity(subject);
-
-		for (int i = 0; i < count && subject.IsValid(); i++)
-		{
-			if (entities[i] == ranked)
-				own = i;
-		}
+		count = m_Data.GetOrderedEntities(entities, MAX_PLAYERS);
+		const CScoreboardData::Subject *found = std::find(entities, entities + count, m_Data.GetRankedEntity(subject));
+		own = subject.IsValid() && found != entities + count ? static_cast<int>(found - entities) : -1;
 	}
 
 	RowsState &rows = GetRows(id);
@@ -1155,12 +935,12 @@ bool CHudServerPanel::MeasureBoard(int id, const CScoreboardData::Element &el, c
 	if (rows.iCount == 0)
 		return false;
 
-	const bhl::sb::CTemplate *templates[2] = { data.GetTemplate(id, 0), data.GetTemplate(id, 1) };
+	const bhl::sb::CTemplate *templates[2] = { m_Data.GetTemplate(id, 0), m_Data.GetTemplate(id, 1) };
 	CScoreboardData::Value fills[MAX_ROWS];
-	int columnWide[MAX_ROW_COLUMNS] = {};
-	bool isTextColumn[MAX_ROW_COLUMNS] = {};
-	int iconWide = 0;
 	int maxInt = 0;
+	rows.iIconWide = 0;
+	std::fill(std::begin(rows.iColumnWide), std::end(rows.iColumnWide), 0);
+	std::fill(std::begin(rows.bColumnRight), std::end(rows.bColumnRight), true);
 
 	for (int i = 0; i < rows.iCount; i++)
 	{
@@ -1177,7 +957,7 @@ bool CHudServerPanel::MeasureBoard(int id, const CScoreboardData::Element &el, c
 			row.iColumns = 1;
 			row.iColumnStart[0] = 0;
 			row.iColumnWide[0] = GetTextWide(state.font, row.wszText);
-			columnWide[0] = std::max(columnWide[0], row.iColumnWide[0]);
+			rows.iColumnWide[0] = std::max(rows.iColumnWide[0], row.iColumnWide[0]);
 			continue;
 		}
 
@@ -1204,13 +984,13 @@ bool CHudServerPanel::MeasureBoard(int id, const CScoreboardData::Element &el, c
 		}
 		else
 		{
-			data.GetElementValue(id, rowSubject, fills[i]);
+			m_Data.GetElementValue(id, rowSubject, fills[i]);
 		}
 
 		row.wszText[0] = L'\0';
 
 		if (templates[row.iVariant])
-			data.EvaluateTemplate(*templates[row.iVariant], rowSubject, id, row.wszText, sizeof(row.wszText), nullptr, &extras);
+			m_Data.EvaluateTemplate(*templates[row.iVariant], rowSubject, id, row.wszText, sizeof(row.wszText), &extras);
 
 		row.iColumns = SplitColumns(row.wszText, row.iColumnStart, MAX_ROW_COLUMNS);
 		rows.iColumns = std::max(rows.iColumns, row.iColumns);
@@ -1219,8 +999,10 @@ bool CHudServerPanel::MeasureBoard(int id, const CScoreboardData::Element &el, c
 		{
 			const wchar_t *text = row.wszText + row.iColumnStart[c];
 			row.iColumnWide[c] = GetTextWide(state.font, text);
-			columnWide[c] = std::max(columnWide[c], row.iColumnWide[c]);
-			isTextColumn[c] = isTextColumn[c] || !IsNumericText(text);
+			rows.iColumnWide[c] = std::max(rows.iColumnWide[c], row.iColumnWide[c]);
+
+			// Only digits, spaces and + - . , / : % make a right-aligned column
+			rows.bColumnRight[c] = rows.bColumnRight[c] && wcsspn(text, L"0123456789 +-.,/:%") == wcslen(text);
 		}
 
 		const CScoreboardData::Value &icon = isList ? list->items[index] : fills[i];
@@ -1228,51 +1010,37 @@ bool CHudServerPanel::MeasureBoard(int id, const CScoreboardData::Element &el, c
 		if (icon.type == bhl::sb::E_ValueType::Icon && icon.szSprite[0])
 		{
 			SetRowIcon(row, icon.szSprite, state.iFontTall);
-			iconWide = std::max(iconWide, row.iIconWide);
+			rows.iIconWide = std::max(rows.iIconWide, row.iIconWide);
 		}
 
 		if (fills[i].type == bhl::sb::E_ValueType::Int)
 			maxInt = std::max(maxInt, fills[i].iValue);
 	}
 
+	// fill_alpha bars: cur / max of a Progress, an Int over the largest Int of the rows
 	for (int i = 0; i < rows.iCount; i++)
 	{
 		const CScoreboardData::Value &value = fills[i];
-		bool isProgress = value.type == bhl::sb::E_ValueType::Progress;
-		bool isInt = value.type == bhl::sb::E_ValueType::Int;
-		rows.rows[i].flFill = isProgress ? GetFillFraction(value.iValue, value.iMax) : (isInt ? GetFillFraction(value.iValue, maxInt) : 0.0f);
+		int maxValue = value.type == bhl::sb::E_ValueType::Progress ? value.iMax : (value.type == bhl::sb::E_ValueType::Int ? maxInt : 0);
+		rows.rows[i].flFill = value.iValue > 0 && maxValue > 0 ? std::min(static_cast<float>(value.iValue) / maxValue, 1.0f) : 0.0f;
 	}
 
-	for (int c = 0; c < MAX_ROW_COLUMNS; c++)
-	{
-		rows.iColumnWide[c] = columnWide[c];
-		rows.bColumnRight[c] = !isTextColumn[c];
-	}
-
-	rows.iIconWide = iconWide;
-	state.wide = LayoutBoardColumns(rows.iColumns, columnWide, iconWide, Scaled(GetParam(el, bhl::sb::E_Param::ColumnGap)), rows.iColumnX, rows.iIconX);
-	state.tall = GetStackTall(rows.iCount, state.iFontTall, rows.iStep - state.iFontTall);
+	state.wide = LayoutBoardColumns(rows.iColumns, rows.iColumnWide, rows.iIconWide, Scaled(GetParam(el, bhl::sb::E_Param::ColumnGap)), rows.iColumnX, rows.iIconX);
+	state.tall = GetStackLength(rows.iCount, state.iFontTall, rows.iStep - state.iFontTall);
 	return true;
 }
 
 bool CHudServerPanel::MeasureFeed(int id, const CScoreboardData::Element &el, ElementState &state)
 {
-	const CScoreboardData &data = CScoreboardData::Get();
 	const CScoreboardData::HudLine *lines[CScoreboardData::MAX_HUD_LINES];
-	int seqs[CScoreboardData::MAX_HUD_LINES];
-	float arrivals[CScoreboardData::MAX_HUD_LINES];
 	float lives[CScoreboardData::MAX_HUD_LINES];
-	int count = data.GetHudLines(id, lines);
+	int count = m_Data.GetHudLines(id, lines);
 	float time = CScoreboardData::GetTime();
 	float life = GetParam(el, bhl::sb::E_Param::LifeMs) / 1000.0f;
 	int fadeMs = GetParam(el, bhl::sb::E_Param::LineFadeMs);
 
 	for (int i = 0; i < count; i++)
-	{
-		seqs[i] = lines[i]->iSeq;
-		arrivals[i] = lines[i]->flTime;
 		lives[i] = lines[i]->flLife > 0 ? lines[i]->flLife : life;
-	}
 
 	int picked[MAX_ROWS];
 	float alphas[MAX_ROWS];
@@ -1280,8 +1048,8 @@ bool CHudServerPanel::MeasureFeed(int id, const CScoreboardData::Element &el, El
 
 	if (GetParam(el, bhl::sb::E_Param::Queue) == 1)
 	{
-		AnnouncerAnchor &anchor = m_Anchors[id];
-		int line = FindAnnouncerLine(seqs, arrivals, lives, count, time, anchor.iSeq, anchor.flStart, anchor.flEnd);
+		AnnouncerAnchor &anchor = m_Effects[id].anchor;
+		int line = FindAnnouncerLine(lines, lives, count, time, anchor.iSeq, anchor.flStart, anchor.flEnd);
 
 		if (line >= 0)
 		{
@@ -1295,7 +1063,7 @@ bool CHudServerPanel::MeasureFeed(int id, const CScoreboardData::Element &el, El
 
 		for (int i = count - 1; i >= 0 && shown < maxLines; i--)
 		{
-			float age = time - arrivals[i];
+			float age = time - lines[i]->flTime;
 
 			if (age < lives[i])
 			{
@@ -1328,15 +1096,15 @@ bool CHudServerPanel::MeasureFeed(int id, const CScoreboardData::Element &el, El
 		state.wide = std::max(state.wide, row.iWide);
 	}
 
-	state.tall = GetStackTall(shown, state.iFontTall, rows.iStep - state.iFontTall);
+	state.tall = GetStackLength(shown, state.iFontTall, rows.iStep - state.iFontTall);
 	return true;
 }
 
-void CHudServerPanel::PlaceContent(const CScoreboardData::Element &el, int anchor, ElementState &state)
+void CHudServerPanel::PlaceContent(const CScoreboardData::Element &el, ElementState &state)
 {
 	state.iTextX = state.x;
 	state.iTextY = state.y + (state.tall - state.iFontTall) / 2;
-	state.iAnchor = anchor;
+	state.iAnchor = GetBoxAnchor(el);
 
 	if (state.bRing)
 	{
@@ -1346,32 +1114,25 @@ void CHudServerPanel::PlaceContent(const CScoreboardData::Element &el, int ancho
 	{
 		// The counter stands outside the box, so the anchored edge of the box stays in place
 		int gap = Scaled(GetParam(el, bhl::sb::E_Param::CounterGap));
-		state.iTextX = anchor == ANCHOR_END ? state.x - gap - state.iTextWide : state.x + state.wide + gap;
+		state.iTextX = state.iAnchor == bhl::sb::ANCHOR_END ? state.x - gap - state.iTextWide : state.x + state.wide + gap;
 	}
 	else if (el.kind == bhl::sb::E_ElementKind::Icon && state.iSprite != -1)
 	{
-		state.iIconX = state.x;
-		state.iIconY = state.y + (state.tall - state.iIconTall) / 2;
 		state.iTextX = state.x + state.iIconWide + Scaled(GetParam(el, bhl::sb::E_Param::IconGap));
 	}
 }
 
 void CHudServerPanel::UpdateStripSprites()
 {
-	const CScoreboardData &data = CScoreboardData::Get();
-
-	if (m_iStripSpriteSerial == data.GetSerial())
+	if (m_iStripSpriteSerial == m_Data.GetSerial())
 		return;
 
-	m_iStripSpriteSerial = data.GetSerial();
+	m_iStripSpriteSerial = m_Data.GetSerial();
 
 	for (int id = 0; id < bhl::sb::MAX_ELEMENTS; id++)
 	{
-		const CScoreboardData::Element &el = data.GetElement(id);
-		const CScoreboardData::List *list = nullptr;
-
-		if (el.bValid && el.kind == bhl::sb::E_ElementKind::Strip && el.szList[0])
-			list = data.FindList(el.szList);
+		const CScoreboardData::Element &el = m_Data.GetElement(id);
+		const CScoreboardData::List *list = el.bValid && el.kind == bhl::sb::E_ElementKind::Strip && el.szList[0] ? m_Data.FindList(el.szList) : nullptr;
 
 		for (int i = 0; i < bhl::sb::MAX_LIST_ITEMS; i++)
 		{
@@ -1382,29 +1143,9 @@ void CHudServerPanel::UpdateStripSprites()
 	}
 }
 
-int CHudServerPanel::GetIconSprite(int id, const char *sprite)
-{
-	if (!sprite[0])
-		return -1;
-
-	if (strcmp(m_szIconSprites[id], sprite))
-	{
-		Q_strncpy(m_szIconSprites[id], sprite, sizeof(m_szIconSprites[id]));
-		m_iIconSprites[id] = GetScoreSpriteIndex(sprite);
-	}
-
-	return m_iIconSprites[id];
-}
-
 void CHudServerPanel::SetRowIcon(RowState &row, const char *sprite, int tall)
 {
-	if (strcmp(row.szSpriteName, sprite))
-	{
-		Q_strncpy(row.szSpriteName, sprite, sizeof(row.szSpriteName));
-		row.iSpriteOfName = GetScoreSpriteIndex(sprite);
-	}
-
-	const wrect_t &rc = GetScoreSpriteRect(row.iSpriteOfName);
+	const wrect_t &rc = GetScoreSpriteRect(GetCachedSprite(sprite, row.szSpriteName, row.iSpriteOfName));
 	bool isValid = rc.GetWidth() > 0 && rc.GetHeight() > 0;
 	row.iSprite = isValid ? row.iSpriteOfName : -1;
 	row.iIconWide = isValid ? rc.GetWidth() * tall / rc.GetHeight() : 0;
@@ -1412,18 +1153,16 @@ void CHudServerPanel::SetRowIcon(RowState &row, const char *sprite, int tall)
 
 void CHudServerPanel::UpdateTrack(int id, const CScoreboardData::Subject &subject, int count)
 {
-	const CScoreboardData &data = CScoreboardData::Get();
 	unsigned char *counts = m_iTrackCounts[id];
 	std::fill(counts, counts + bhl::sb::MAX_LIST_ITEMS, 0);
 
 	for (int i = 1; i <= MAX_PLAYERS; i++)
 	{
-		CScoreboardData::Subject player;
+		CScoreboardData::Subject player = { i, 0 };
 		CScoreboardData::Value value;
 		int position = 0;
-		player.iPlayer = i;
 
-		if (i == subject.iPlayer || !CScoreboardData::IsParticipant(i) || !data.GetElementValue(id, player, value) || !value.GetNumber(position))
+		if (i == subject.iPlayer || !CScoreboardData::IsParticipant(i) || !m_Data.GetElementValue(id, player, value) || !value.GetNumber(position))
 			continue;
 
 		counts[clamp(position, 1, count) - 1]++;
@@ -1438,19 +1177,11 @@ CHudServerPanel::RowsState &CHudServerPanel::GetRows(int id)
 	return *m_pRows[id];
 }
 
-const CHudServerPanel::RowsState &CHudServerPanel::GetPaintRows(int id, const ElementState &state) const
-{
-	return state.bGhost ? *m_pGhostRows[id] : *m_pRows[id];
-}
-
 int CHudServerPanel::GetParam(const CScoreboardData::Element &el, bhl::sb::E_Param param) const
 {
-	int value;
-
-	if (el.GetParam(param, value))
-		return value;
-
-	return m_iParamDefaults[static_cast<int>(param)];
+	int value = m_iParamDefaults[static_cast<int>(param)];
+	el.GetParam(param, value);
+	return value;
 }
 
 void CHudServerPanel::SaveGhosts()
@@ -1504,10 +1235,9 @@ bool CHudServerPanel::IsFading() const
 
 bool CHudServerPanel::UpdateEffects(int id, const CScoreboardData::Element &el, bool present, float time)
 {
-	const CScoreboardData &data = CScoreboardData::Get();
 	EffectState &fx = m_Effects[id];
 	ElementState &state = m_States[id];
-	int removals = data.GetElementRemovals(id);
+	int removals = m_Data.GetElementRemovals(id);
 
 	// Removal and redefinition with another kind are instant: the old element doesn't fade out
 	if (fx.kind != el.kind || fx.iRemovals != removals)
@@ -1515,14 +1245,13 @@ bool CHudServerPanel::UpdateEffects(int id, const CScoreboardData::Element &el, 
 		fx = EffectState();
 		fx.kind = el.kind;
 		fx.iRemovals = removals;
-		m_Anchors[id] = AnnouncerAnchor();
 	}
 
 	if (!el.bValid)
 		return false;
 
 	CScoreboardData::Subject subject;
-	data.GetElementSubject(id, subject);
+	m_Data.GetElementSubject(id, subject);
 
 	if (fx.subject != subject)
 	{
@@ -1564,7 +1293,7 @@ bool CHudServerPanel::UpdateEffects(int id, const CScoreboardData::Element &el, 
 		int warnAt = GetParam(el, bhl::sb::E_Param::WarnAt);
 		CScoreboardData::Value value;
 		int number = 0;
-		bool warn = warnAt > 0 && data.GetElementValue(id, subject, value) && value.GetNumber(number) && number <= warnAt;
+		bool warn = warnAt > 0 && m_Data.GetElementValue(id, subject, value) && value.GetNumber(number) && number <= warnAt;
 
 		if (warn && !fx.bWarn)
 			fx.flWarnTime = time;
@@ -1572,7 +1301,8 @@ bool CHudServerPanel::UpdateEffects(int id, const CScoreboardData::Element &el, 
 		fx.bWarn = warn;
 	}
 
-	bool drawn = present && IsHoldRunning(time - fx.flHoldTime, holdMs);
+	// hold_ms: drawn that long after the appearance or a change; always without it
+	bool drawn = present && (holdMs <= 0 || (time - fx.flHoldTime) * 1000.0f < holdMs);
 
 	if (drawn != fx.bDrawn)
 	{
@@ -1588,10 +1318,8 @@ bool CHudServerPanel::UpdateEffects(int id, const CScoreboardData::Element &el, 
 	{
 		// Color order (8.13): element color, variant slot, warn, flash
 		unsigned char rgba[4];
-		bool hasVariants = state.kind == bhl::sb::E_ElementKind::Text || state.kind == bhl::sb::E_ElementKind::Icon || state.kind == bhl::sb::E_ElementKind::Meter;
-		int variant = hasVariants && (el.iColorMask & VARIANT_SLOTS) ? data.GetElementVariant(id, subject) : -1;
 
-		if (variant >= 0 && el.GetSlotColor(variant, rgba))
+		if (el.GetSlotColor(m_Data.GetElementVariant(id, subject), rgba))
 			state.color = ToColor(rgba);
 
 		if (fx.bWarn)
@@ -1599,9 +1327,7 @@ bool CHudServerPanel::UpdateEffects(int id, const CScoreboardData::Element &el, 
 
 		state.bWarn = fx.bWarn;
 		state.flFlash = GetFlashFactor(time - fx.flFlashTime, flashMs);
-
-		if (state.flFlash > 0)
-			state.color = FlashColor(state.color, state.flFlash);
+		state.color = FlashColor(state.color, state.flFlash);
 	}
 	else if (fx.flFade > 0 && fx.bHasGhost)
 	{
@@ -1626,7 +1352,7 @@ unsigned int CHudServerPanel::GetSignature(int id, const CScoreboardData::Subjec
 	switch (state.kind)
 	{
 	case bhl::sb::E_ElementKind::Text:
-		hash = HashInt(hash, CScoreboardData::Get().GetElementVariant(id, subject));
+		hash = HashInt(hash, m_Data.GetElementVariant(id, subject));
 		break;
 	case bhl::sb::E_ElementKind::Icon:
 		hash = HashInt(hash, state.iSprite);
@@ -1653,30 +1379,27 @@ unsigned int CHudServerPanel::GetSignature(int id, const CScoreboardData::Subjec
 		break;
 	}
 
-	return state.bHasText ? HashText(hash, state.wszText) : hash;
+	return state.wszText[0] ? HashText(hash, state.wszText) : hash;
 }
 
 void CHudServerPanel::AddDrawnBounds(int id, const ElementState &state, int *bounds) const
 {
 	AddToBounds(bounds, state.x, state.y, state.wide, state.tall);
 
-	if (state.kind == bhl::sb::E_ElementKind::Meter && state.bHasText)
+	if (state.kind == bhl::sb::E_ElementKind::Meter && state.wszText[0])
 		AddToBounds(bounds, state.iTextX, state.iTextY, state.iTextWide, state.iFontTall);
 
 	if (state.kind != bhl::sb::E_ElementKind::Strip)
 		return;
 
+	int leftWide = vgui2::surface()->GetCharacterWidth(state.font, MARKER_LEFT[0]);
+	int rightWide = vgui2::surface()->GetCharacterWidth(state.font, MARKER_RIGHT[0]);
+
 	if (state.iFirst > 0)
-	{
-		int markerWide = vgui2::surface()->GetCharacterWidth(state.font, MARKER_LEFT[0]);
-		AddToBounds(bounds, state.x - state.iCellGap - markerWide, state.iTextY, markerWide, state.iFontTall);
-	}
+		AddToBounds(bounds, state.x - state.iCellGap - leftWide, state.iTextY, leftWide, state.iFontTall);
 
 	if (state.iFirst + state.iShown < state.iMax)
-	{
-		int markerWide = vgui2::surface()->GetCharacterWidth(state.font, MARKER_RIGHT[0]);
-		AddToBounds(bounds, state.x + state.wide + state.iCellGap, state.iTextY, markerWide, state.iFontTall);
-	}
+		AddToBounds(bounds, state.x + state.wide + state.iCellGap, state.iTextY, rightWide, state.iFontTall);
 
 	for (int i = 0; state.bTrack && i < state.iShown; i++)
 	{
@@ -1690,11 +1413,6 @@ void CHudServerPanel::AddDrawnBounds(int id, const ElementState &state, int *bou
 		Box box = LayoutTrackMarker(state.x + i * (state.iCellWide + state.iCellGap), state.iCellWide, state.y, n, std::max(2, Scaled(4)), Scaled(2), GetTextWide(state.font, text), state.iFontTall);
 		AddToBounds(bounds, box.x, box.y, box.wide, box.tall);
 	}
-}
-
-Color CHudServerPanel::GetColor(const ElementState &state, int partAlpha) const
-{
-	return GetColor(state, state.color, partAlpha);
 }
 
 Color CHudServerPanel::GetColor(const ElementState &state, Color color, int partAlpha) const
@@ -1724,13 +1442,11 @@ void CHudServerPanel::PaintBackground()
 		m_iCapTextures[1] = CreateCircleTexture(false, CIRCLE_TEXTURE_SIZE / 2, CIRCLE_TEXTURE_SIZE);
 	}
 
-	const CScoreboardData &data = CScoreboardData::Get();
-
 	// Boxes go under every other shape, and before any sprite turns blending off
 	for (int id = 0; id < bhl::sb::MAX_ELEMENTS; id++)
 	{
 		if (m_States[id].bDrawn && m_States[id].kind == bhl::sb::E_ElementKind::Box)
-			PaintBox(m_States[id], data.GetElement(id));
+			PaintBox(m_States[id], m_Data.GetElement(id));
 	}
 
 	for (int id = 0; id < bhl::sb::MAX_ELEMENTS; id++)
@@ -1740,7 +1456,7 @@ void CHudServerPanel::PaintBackground()
 		if (!state.bDrawn)
 			continue;
 
-		const CScoreboardData::Element &el = data.GetElement(id);
+		const CScoreboardData::Element &el = m_Data.GetElement(id);
 
 		switch (state.kind)
 		{
@@ -1751,7 +1467,7 @@ void CHudServerPanel::PaintBackground()
 			PaintStripCells(id, state, el);
 			break;
 		case bhl::sb::E_ElementKind::Icon:
-			DrawPanelSprite(state.iSprite, state.iIconX, state.iIconY, state.iIconWide, state.iIconTall, GetColor(state, 255));
+			DrawPanelSprite(state.iSprite, state.x, state.y + (state.tall - state.iIconTall) / 2, state.iIconWide, state.iIconTall, GetColor(state, 255));
 			break;
 		case bhl::sb::E_ElementKind::Board:
 			PaintBoardShapes(id, state, el);
@@ -1767,8 +1483,6 @@ void CHudServerPanel::PaintBackground()
 
 void CHudServerPanel::Paint()
 {
-	const CScoreboardData &data = CScoreboardData::Get();
-
 	for (int id = 0; id < bhl::sb::MAX_ELEMENTS; id++)
 	{
 		const ElementState &state = m_States[id];
@@ -1777,12 +1491,12 @@ void CHudServerPanel::Paint()
 			continue;
 
 		if (state.kind == bhl::sb::E_ElementKind::Strip)
-			PaintStripTexts(id, state, data.GetElement(id));
+			PaintStripTexts(id, state, m_Data.GetElement(id));
 		else if (state.kind == bhl::sb::E_ElementKind::Board)
-			PaintBoardTexts(id, state, data.GetElement(id));
+			PaintBoardTexts(id, state, m_Data.GetElement(id));
 		else if (state.kind == bhl::sb::E_ElementKind::Feed)
-			PaintFeed(id, state, data.GetElement(id), true);
-		else if (state.bHasText)
+			PaintFeed(id, state, m_Data.GetElement(id), true);
+		else if (state.wszText[0])
 			DrawCellText(state.font, state.iTextX, state.iTextY, GetColor(state, 255), state.wszText);
 	}
 }
@@ -1794,11 +1508,14 @@ void CHudServerPanel::PaintMeter(const ElementState &state, const CScoreboardDat
 	if (state.bRing)
 	{
 		Color color = GetColor(state, 255);
+		double center = (state.wide - state.iDotSize) / 2.0;
 
+		// Dot 0 on top, clockwise
 		for (int i = 0; i < state.iRingDots; i++)
 		{
-			int x, y;
-			GetRingDot(state.wide, state.iDotSize, i, state.iRingDots, x, y);
+			double angle = -PI / 2 + 2 * PI * i / state.iRingDots;
+			int x = static_cast<int>(std::floor(center + center * std::cos(angle) + 0.5));
+			int y = static_cast<int>(std::floor(center + center * std::sin(angle) + 0.5));
 			DrawTexture(i < state.iRingFilled ? m_iDotTexture : m_iRingTexture, state.x + x, state.y + y, state.iDotSize, state.iDotSize, color);
 		}
 
@@ -1874,7 +1591,7 @@ void CHudServerPanel::PaintStripCells(int id, const ElementState &state, const C
 
 void CHudServerPanel::PaintStripTexts(int id, const ElementState &state, const CScoreboardData::Element &el)
 {
-	const CScoreboardData::List *list = el.szList[0] ? CScoreboardData::Get().FindList(el.szList) : nullptr;
+	const CScoreboardData::List *list = el.szList[0] ? m_Data.FindList(el.szList) : nullptr;
 	int alphaIconFuture = GetParam(el, bhl::sb::E_Param::AlphaIconFuture);
 	int step = state.iCellWide + state.iCellGap;
 
@@ -1900,10 +1617,7 @@ void CHudServerPanel::PaintStripTexts(int id, const ElementState &state, const C
 	Color color = GetColor(state, 255);
 
 	if (state.iFirst > 0)
-	{
-		int markerWide = vgui2::surface()->GetCharacterWidth(state.font, MARKER_LEFT[0]);
-		DrawCellText(state.font, state.x - state.iCellGap - markerWide, state.iTextY, color, MARKER_LEFT);
-	}
+		DrawCellText(state.font, state.x - state.iCellGap - vgui2::surface()->GetCharacterWidth(state.font, MARKER_LEFT[0]), state.iTextY, color, MARKER_LEFT);
 
 	if (state.iFirst + state.iShown < state.iMax)
 		DrawCellText(state.font, state.x + state.wide + state.iCellGap, state.iTextY, color, MARKER_RIGHT);
@@ -2001,9 +1715,10 @@ void CHudServerPanel::PaintFeed(int id, const ElementState &state, const CScoreb
 	for (int i = 0; i < rows.iCount; i++)
 	{
 		const RowState &row = rows.rows[i];
-		int x = state.x + AlignInBox(state.iAnchor, state.wide, row.iWide);
+		int space = state.wide - row.iWide;
+		int x = state.x + (state.iAnchor == bhl::sb::ANCHOR_END ? space : (state.iAnchor == bhl::sb::ANCHOR_CENTER ? space / 2 : 0));
 		int y = state.y + i * rows.iStep;
-		Color color = GetRowColor(state, el, row.iVariant, ToPartAlpha(row.flAlpha));
+		Color color = GetRowColor(state, el, row.iVariant, static_cast<int>(row.flAlpha * 255 + 0.5f));
 
 		if (texts && row.wszText[0])
 			DrawCellText(state.font, x + row.iTextX, y, color, row.wszText);

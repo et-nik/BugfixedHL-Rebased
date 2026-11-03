@@ -415,11 +415,6 @@ void CHud::Init(void)
 	CResults::Get().Init();
 	CScoreboardData::Get().Init();
 
-	// The engine executes the configs before the first frame
-	CallOnNextFrame([this]() {
-		UpdateCapsUserinfo();
-	});
-
 #if USE_UPDATER
 	CHttpClient::Get();
 	CUpdateChecker::Get().Init();

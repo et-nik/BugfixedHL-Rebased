@@ -183,9 +183,6 @@ enum BhlSbTarget
 	BHL_SB_GLOBAL = 0
 };
 
-/**
- * Add to the sort priority of bhl_sb_add_column for ascending order.
- */
 #define BHL_SB_SORT_ASC 0x80
 
 enum BhlSbClock
@@ -299,20 +296,10 @@ enum BhlHudStd
 	BHL_HUD_STD_JUMPSPEED = (1 << 4)
 };
 
-/**
- * r of bhl_hud_color: the element follows hud_color and uses only alpha.
- */
 #define BHL_HUD_COLOR -1
-
-/**
- * Longest template in bytes. Longer texts are not set, they are never cut.
- */
 #define BHL_HUD_MAX_TEXT 188
 
-/**
- * Color slots of bhl_hud_slot_color after the text variants 0-7.
- * BHL_HUD_SLOT_WARN is used while the warn_at param holds, BHL_HUD_SLOT_ACCENT by the accent bar of a box.
- */
+// Color slots of bhl_hud_slot_color after the text variants 0-7
 #define BHL_HUD_SLOT_WARN 8
 #define BHL_HUD_SLOT_ACCENT 9
 

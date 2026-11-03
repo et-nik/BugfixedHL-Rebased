@@ -137,7 +137,6 @@ private:
 	{
 		ColumnType type = ColumnType::Custom;
 		int nColumnID = -1; //!< Column id in the store for ColumnType::Custom
-		int nSlot = -1; //!< Cell image slot of a custom column, -1 for a standard one
 		int iAlign = 0; //!< 0 left, 1 center, 2 right
 		int iFlags = 0; //!< SectionedListPanel column flags
 		int iWidth = 0;
@@ -150,7 +149,6 @@ private:
 	{
 		wchar_t wszText[bhl::sb::TEMPLATE_BUF_LEN] = {}; //!< Evaluated text, "" when the row is not drawn
 		Color color;
-		int x = 0, y = 0, wide = 0, tall = 0; //!< Set by LayoutBanner
 	};
 
 	struct MenuData
@@ -192,6 +190,7 @@ private:
 	// Custom scoreboard (docs/scoreboard-protocol.md)
 	BannerRow m_BannerTop; //!< On the line of the server name
 	BannerRow m_BannerBottom; //!< On the line of the map name
+	int m_iBannerX = 0, m_iBannerWide = 0; //!< Shared by both rows, set by LayoutBanner
 	std::vector<CustomColumn> m_CustomColumns;
 	std::array<CSectionHeader *, MAX_TEAMS + 2> m_SectionHeaders = {}; //!< Headers of the sections by team
 	ScoreCellStyle m_CellStyle;
@@ -363,39 +362,16 @@ private:
 	 */
 	static bool StaticPlayerSortFuncByFrags(vgui2::SectionedListPanel *list, int itemID1, int itemID2);
 
-	/**
-	 * Returns true if team ilhs goes before team irhs.
-	 */
-	bool IsTeamBefore(int ilhs, int irhs);
-
-	/**
-	 * Returns true if the team sections are still in the order of IsTeamBefore.
-	 */
+	//! Returns true if the team sections of the custom scoreboard are still in the order of the store
 	bool AreTeamsSorted();
 
-	/**
-	 * Builds m_CustomColumns.
-	 */
 	void BuildCustomColumns();
 
-	/**
-	 * Returns the cell image at an index of m_pImageList. Creates it on first use.
-	 */
-	CScoreCellImage *GetCellImage(int index);
-
-	/**
-	 * Fills custom cells of a player row.
-	 */
 	void UpdateCustomCells(CPlayerInfo *pi, KeyValues *kv);
 
-	/**
-	 * Fills custom cells of a team section header.
-	 */
 	void UpdateCustomTeamHeader(int nTeamID);
 
-	/**
-	 * Evaluates the banner rows. Lays the banner out again if a text changed.
-	 */
+	//! Evaluates the banner rows. Lays the banner out again if a text changed.
 	void UpdateBanner();
 
 	/**
@@ -405,14 +381,9 @@ private:
 	 */
 	bool UpdateBannerRow(BannerRow &row, bhl::sb::E_Place place, Color schemeColor);
 
-	/**
-	 * Places the banner in the header left of the player count and narrows the server name.
-	 */
+	//! Places the banner in the header left of the player count and narrows the server name
 	void LayoutBanner();
 
-	/**
-	 * Sorts rows by the order of the custom scoreboard.
-	 */
 	static bool StaticPlayerSortFuncCustom(vgui2::SectionedListPanel *list, int itemID1, int itemID2);
 };
 

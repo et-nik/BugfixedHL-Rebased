@@ -1,5 +1,6 @@
 #ifndef SCOREBOARD_DATA_H
 #define SCOREBOARD_DATA_H
+#include <cstdint>
 #include <ClientSupportsFlags.h>
 #include <ScoreboardProtocol.h>
 #include "cdll_dll.h"
@@ -26,9 +27,9 @@ public:
 		char szText[bhl::sb::MAX_TEXT_LEN + 1] = {}; //!< Text value or Icon text
 		char szSprite[bhl::sb::MAX_TEXT_LEN + 1] = {}; //!< Icon sprite name from hud.txt
 
-		bool IsEmpty() const;
+		bool IsEmpty() const { return type == bhl::sb::E_ValueType::None; }
 
-		bool IsRunningClock() const;
+		bool IsRunningClock() const { return type == bhl::sb::E_ValueType::Clock && IsEnumFlagSet(clockFlags, bhl::sb::E_ClockFlags::Run); }
 
 		//! Current value of a Clock in ms (4.3): runs from flClockTime, a countdown stops at 0
 		int GetClockMs() const;
@@ -38,7 +39,7 @@ public:
 
 		/**
 		 * Text of the value (8.10, "Values are written as"): the number, the localized text,
-		 * the icon name (GetIconName), "cur/max" or "cur" if max is 0, a Clock as m:ss. "" for None.
+		 * the icon name (10.3), "cur/max" or "cur" if max is 0, a Clock as m:ss. "" for None.
 		 */
 		void ToString(wchar_t *buf, int bufSizeBytes) const;
 	};
@@ -82,29 +83,24 @@ public:
 		bhl::sb::E_ElementFlags flags = bhl::sb::E_ElementFlags::None;
 		int x = 0; //!< 1/8192 of the screen width, bhl::sb::POS_CENTER is the center
 		int y = 0; //!< 1/8192 of the screen height
-		bhl::sb::E_HAlign hAlign = bhl::sb::E_HAlign::Auto;
-		bhl::sb::E_VAlign vAlign = bhl::sb::E_VAlign::Auto;
+		int hAlign = bhl::sb::ANCHOR_AUTO;
+		int vAlign = bhl::sb::ANCHOR_AUTO;
 		bhl::sb::E_Place place = bhl::sb::E_Place::Screen; //!< Unknown places are Screen
 		int iParent = -1; //!< Element id for the parent places, -1 if none
 		int iGap = 0; //!< Proportional units
 		int r = 255, g = 255, b = 255, a = 255;
 		bhl::sb::E_Font font = bhl::sb::E_Font::Text; //!< Unknown fonts are Text
-		char szSelect[bhl::sb::MAX_REF_LEN + 1] = {};
-		char szValue[bhl::sb::MAX_REF_LEN + 1] = {};
 		char szList[bhl::sb::MAX_KEY_LEN + 1] = {};
-		bhl::sb::TemplateRef selectRef; //!< Parsed szSelect, not set if it is ""
-		bhl::sb::TemplateRef valueRef; //!< Parsed szValue, not set if it is ""
-		bhl::sb::ParamMask iParamMask = 0; //!< Bit per param id that the server sent
+		bhl::sb::TemplateRef selectRef; //!< Parsed Element.select, not set if it is ""
+		bhl::sb::TemplateRef valueRef; //!< Parsed Element.value, not set if it is ""
+		uint64_t iParamMask = 0; //!< Bit per param id that the server sent
 		int params[bhl::sb::MAX_PARAM_ID + 1] = {}; //!< Clamped values by param id
 		unsigned int iColorMask = 0; //!< Bit per color slot that the server sent
 		unsigned char colors[bhl::sb::MAX_COLOR_SLOTS][4] = {}; //!< rgba by slot
 
 		bool HasFlag(bhl::sb::E_ElementFlags flag) const { return IsEnumFlagSet(flags, flag); }
 
-		/**
-		 * Returns true and the value if the server sent the param.
-		 * Otherwise HudServerPanel uses its default from HudLayoutBase.res.
-		 */
+		//! Returns true and the value if the server sent the param, otherwise value is left as it is: HudServerPanel passes in its default from HudLayoutBase.res
 		bool GetParam(bhl::sb::E_Param param, int &value) const;
 
 		//! Returns true and the rgba if the server sent the color slot (4.3, 8.5)
@@ -126,25 +122,23 @@ public:
 		bool operator!=(const Subject &other) const { return !(*this == other); }
 	};
 
-	/**
-	 * Built-in values of a subject (8.11), computed once per frame.
-	 * A value is missing when its flag is false.
-	 */
+	//! Built-in numbers of a subject (8.11) by E_Builtin, computed once per frame. A missing one has no bit in iMask.
 	struct Builtins
 	{
-		bool bHasSubject = false;
-		bool bRanked = false; //!< The ranked entity of the subject has a number: @place, @state, @behind
-		int iPlace = 0;
-		int iTotal = 0; //!< Never missing
-		int iState = 0; //!< 0 no rivals, 1 a rival ahead, 2 tied for the first place, 3 leading
-		Subject rival; //!< Nearest rival ahead when iState is 1: @rival, @gap, @pass
-		int iGap = 0; //!< @pass is iGap + 1
-		int iLead = 0; //!< Valid when iState is 2 or 3
-		int iBehind = 0;
-		bool bHasScore = false;
-		int iScore = 0;
-		int iFrags = 0; //!< @frags and @deaths: valid with bHasSubject
-		int iDeaths = 0;
+		int numbers[static_cast<int>(bhl::sb::E_Builtin::Deaths) + 1] = {};
+		unsigned int iMask = 0;
+		Subject rival; //!< Nearest rival ahead when @state is 1: @rival
+
+		void Set(bhl::sb::E_Builtin builtin, int value)
+		{
+			numbers[static_cast<int>(builtin)] = value;
+			iMask |= 1u << static_cast<int>(builtin);
+		}
+
+		bool Has(bhl::sb::E_Builtin builtin) const { return ((iMask >> static_cast<int>(builtin)) & 1u) != 0; }
+
+		//! The number, 0 if it is missing
+		int Get(bhl::sb::E_Builtin builtin) const { return Has(builtin) ? numbers[static_cast<int>(builtin)] : 0; }
 	};
 
 	//! Values of the built-ins that only some templates have (8.10): Board rows and events
@@ -174,7 +168,7 @@ public:
 
 	static CScoreboardData &Get();
 
-	CScoreboardData();
+	CScoreboardData() = default;
 	CScoreboardData(const CScoreboardData &) = delete;
 	CScoreboardData &operator=(const CScoreboardData &) = delete;
 
@@ -202,10 +196,9 @@ public:
 	 * When ScoreboardV1 is cleared the store is cleared as on Reset, and messages are dropped
 	 * while it stays cleared. Before the first call the store accepts messages.
 	 *
-	 * After ScoreboardV1 comes back, every message except Reset is dropped until a Reset with
-	 * version >= 1 arrives or VidInit runs. A full sync always starts with Reset, and a server
-	 * that missed the toggle (a Query source re-reads _bhl only every 10 s) must not fill the empty
-	 * store with plain deltas.
+	 * After ScoreboardV1 comes back, every message except Reset is dropped until a Reset arrives
+	 * or VidInit runs. A full sync always starts with Reset, and a server that missed the toggle
+	 * (a Query source re-reads _bhl only every 10 s) must not fill the empty store with plain deltas.
 	 */
 	void SetClientCaps(bhl::E_ClientCaps caps);
 
@@ -216,14 +209,11 @@ public:
 	// Schema (4.3, 6.2)
 	//----------------------------------------------------------------------------------------------------
 
-	//! True when a Config arrived after the last Reset or VidInit
-	bool HasConfig() const { return m_bConfigReceived; }
-
-	//! True when HasConfig() and IsCustomEnabled(): the custom scoreboard is shown
-	bool IsActive() const;
+	//! True when a Config arrived after the last Reset or VidInit and IsCustomEnabled(): the custom scoreboard is shown
+	bool IsActive() const { return m_bConfigReceived && IsCustomEnabled(); }
 
 	//! True when IsActive() and the config hides the standard column
-	bool IsStdColumnHidden(bhl::sb::E_ConfigFlags flag) const;
+	bool IsStdColumnHidden(bhl::sb::E_ConfigFlags flag) const { return IsActive() && IsEnumFlagSet(m_ConfigFlags, flag); }
 
 	const char *GetTitle() const { return m_szTitle; }
 	const char *GetTag() const { return m_szTag; }
@@ -244,12 +234,8 @@ public:
 	 */
 	int GetBadgeColumns(int host, int *ids, int maxIds) const;
 
-	//! Sort key columns in priority order (ties by id): priority > 0, not Builtin or Badge, Hidden included
-	int GetSortColumnCount() const { return m_iSortColumnCount; }
-	int GetSortColumn(int i) const;
-
 	//! Returns id of the first sort key column or -1
-	int GetFirstSortColumn() const;
+	int GetFirstSortColumn() const { return m_iSortColumnCount > 0 ? m_SortColumns[0] : -1; }
 
 	//----------------------------------------------------------------------------------------------------
 	// Cells and lists
@@ -278,29 +264,26 @@ public:
 	 * Empty cells go after filled ones.
 	 * @return	< 0 if a goes before b, > 0 if after; 0 only for a == b
 	 */
-	int ComparePlayers(int a, int b) const;
+	int ComparePlayers(int a, int b) const { return CompareEntities({ a, 0 }, { b, 0 }); }
 
 	//! Full order of teams by team cells, then team frags descending, deaths ascending, then the number
-	int CompareTeams(int a, int b) const;
-
-	//! Team frags and deaths as the scoreboard shows them: TeamScore if it overrides them, else the sums of the players
-	void GetTeamScore(int team, int &frags, int &deaths) const;
+	int CompareTeams(int a, int b) const { return CompareEntities({ 0, a }, { 0, b }); }
 
 	/**
 	 * Place in the rank column among participants: by the first sort key only, equal values share
 	 * a place (1, 1, 3); without sort keys by frags. 0 if the player is not a participant or his
 	 * first-key cell is empty.
 	 */
-	int GetPlayerPlace(int client) const;
+	int GetPlayerPlace(int client) const { return GetPlace({ client, 0 }); }
 
 	//! Place in the rank column among teams with participants, the same way
-	int GetTeamPlace(int team) const;
+	int GetTeamPlace(int team) const { return GetPlace({ 0, team }); }
 
 	//! True if the ranked entities are the teams with participants (6.4)
-	bool IsTeamMode() const;
+	bool IsTeamMode() const { return GetRanking().bTeamMode; }
 
 	//! First row of the order: a team in team mode, otherwise a participant; invalid without participants
-	Subject GetFirstRow() const;
+	Subject GetFirstRow() const { return GetRanking().firstRow; }
 
 	/**
 	 * The ranked entities (6.4) in the scoreboard order: teams with participants in team mode, otherwise participants.
@@ -325,13 +308,10 @@ public:
 	unsigned int GetVisibleMask() const { return m_iVisibleMask; }
 
 	//! True if the element is defined and its bit is set in HudState.visible
-	bool IsElementVisible(int id) const;
-
-	//! Raw HudState.hide: bhl::sb::E_HudStd
-	unsigned int GetHiddenStdParts() const { return m_iHiddenStdParts; }
+	bool IsElementVisible(int id) const { return GetElement(id).bValid && (m_iVisibleMask & (1u << id)); }
 
 	//! True if the server hides the standard HUD part and IsHudEnabled() (8.12)
-	bool IsStdPartHidden(bhl::sb::E_HudStd part) const;
+	bool IsStdPartHidden(bhl::sb::E_HudStd part) const { return (m_iHiddenStdParts & static_cast<unsigned int>(part)) && IsHudEnabled(); }
 
 	//! Subject of the viewer (8.2): the local player, the observed player or nobody
 	Subject GetViewerSubject() const;
@@ -344,20 +324,14 @@ public:
 	bool GetElementSubject(int id, Subject &out) const;
 
 	/**
-	 * Resolves a ref for a subject (8.10) as a template shows it: the ITemplateContext::GetValue of
-	 * the store. A cell of the player, then of his team, then global (a team subject starts with its
-	 * team cells, nobody reads global cells only), or a built-in value; with bFirstRow for the first row.
-	 * cur, max and left make an Int of a Progress. Built-in numbers come as Int.
-	 *
-	 * "@value" is the value ref of element elementId (-1 for none), resolved at most one level:
-	 * its own format applies first, then ref.format. When that value ref is itself "@value", with or
-	 * without '^' or a format, the value is missing, so a self-reference can't recurse.
-	 *
-	 * Text cells come localized by the token rule (4.2). Names (@name, @rival) are never looked up
-	 * by that rule: they come as ITemplateContext::GetPlayerName and GetTeamName write them.
-	 * @return	false if the value is missing (out.type is then Missing)
+	 * The ITemplateContext::GetValue of the store, for a subject; "@value" reads the value ref of element
+	 * elementId (-1 for none). A cell of the player, then of his team, then global (a team subject starts
+	 * with its team cells, nobody reads global cells only), or a built-in value; built-in numbers come as Int.
 	 */
 	bool ResolveRef(const bhl::sb::TemplateRef &ref, const Subject &subject, int elementId, bhl::sb::TemplateValue &out) const;
+
+	//! A ref as a stored value: ResolveRef without names, which are missing here
+	bool GetRefValue(const bhl::sb::TemplateRef &ref, const Subject &subject, int elementId, Value &out) const;
 
 	/**
 	 * Value of the element's value ref for drawing a Meter, an Icon or a Strip.
@@ -377,7 +351,7 @@ public:
 	static bool FormatValue(bhl::sb::E_RefFormat format, Value &value);
 
 	/**
-	 * Variant of an element (8.10, Variants): Text by the number of select as ResolveRef gives it
+	 * Variant of an element (8.10, Variants): Text by the number of select as GetRefValue gives it
 	 * ("" is 0), Icon and Meter 0, Strip none.
 	 * @return	0-7, or -1 if the select value is missing or out of range, or the variant has no template
 	 */
@@ -395,11 +369,9 @@ public:
 
 	/**
 	 * Evaluates any template for a subject in the context of element elementId (-1 for none).
-	 * Used by hud_server_eval.
-	 * @param	pMissing	See bhl::sb::CTemplate::Evaluate
-	 * @param	pExtras		@item, @index, @a-@d, @icon and the value of @value of a Board row or an event; refs with '^' resolve without them
+	 * @param	pExtras	@item, @index, @a-@d, @icon and the value of @value of a Board row or an event; refs with '^' resolve without them
 	 */
-	bool EvaluateTemplate(const bhl::sb::CTemplate &tpl, const Subject &subject, int elementId, wchar_t *buf, int bufSizeBytes, unsigned int *pMissing = nullptr, const TemplateExtras *pExtras = nullptr) const;
+	bool EvaluateTemplate(const bhl::sb::CTemplate &tpl, const Subject &subject, int elementId, wchar_t *buf, int bufSizeBytes, const TemplateExtras *pExtras = nullptr) const;
 
 	/**
 	 * Lines of a Feed element that are kept, oldest first, up to MAX_HUD_LINES.
@@ -409,11 +381,9 @@ public:
 	int GetHudLines(int elementId, const HudLine **out) const;
 
 	/**
-	 * Banner row of the scoreboard (6.8): the lowest-id Text element with this place that is
-	 * visible in HudState, passes the Subject and Leader rules and has a non-empty text.
-	 * Ignores hud_server_elements and the other rules of 8.3.
-	 * @param	place	BannerTop or BannerBottom
-	 * @return	Element id or -1; buf receives its text
+	 * Banner row (6.8): the lowest-id Text element of the place (BannerTop or BannerBottom) that is visible in HudState,
+	 * passes the Subject and Leader rules and has a non-empty text; hud_server_elements and the rest of 8.3 don't apply.
+	 * @return	Element id with its text in buf, or -1 with buf ""
 	 */
 	int GetBannerRow(bhl::sb::E_Place place, wchar_t *buf, int bufSizeBytes) const;
 
@@ -426,9 +396,6 @@ public:
 
 	//! Incremented on every change of the config or columns
 	int GetSchemaSerial() const { return m_iSchemaSerial; }
-
-	//! Incremented on every change of elements, templates and HudState
-	int GetHudSerial() const { return m_iHudSerial; }
 
 	//! Incremented when the store is cleared: Reset (a full sync starts with it), VidInit and the loss of ScoreboardV1
 	int GetResetCount() const { return m_iResetCount; }
@@ -446,25 +413,6 @@ public:
 	 */
 	static void LocalizeString(const char *str, wchar_t *buf, int bufSizeBytes);
 
-	/**
-	 * Display name of an Icon value (10.3): BHL_Weapon_<sprite without "d_"> for standard HL sprites,
-	 * the localized text of the value otherwise.
-	 */
-	static void GetIconName(const Value &value, wchar_t *buf, int bufSizeBytes);
-
-	//----------------------------------------------------------------------------------------------------
-	// Debug commands (6.9)
-	//----------------------------------------------------------------------------------------------------
-
-	//! hud_scoreboard_dump
-	void DumpCommand();
-
-	//! hud_scoreboard_test [off]
-	void TestCommand();
-
-	//! hud_server_eval "<template>"
-	void EvalCommand();
-
 private:
 	bool m_bConfigReceived = false;
 	bool m_bAcceptMessages = true; //!< False while the client caps have no ScoreboardV1
@@ -474,7 +422,6 @@ private:
 	char m_szTag[bhl::sb::MAX_TAG_LEN + 1] = {};
 	int m_iSerial = 0;
 	int m_iSchemaSerial = 0;
-	int m_iHudSerial = 0;
 	int m_iResetCount = 0;
 	int m_iElementRemovals[bhl::sb::MAX_ELEMENTS] = {};
 	int m_iFrame = 0; //!< Incremented by Frame(), invalidates the per-frame caches
@@ -490,7 +437,7 @@ private:
 	unsigned int m_iVisibleMask = 0;
 	unsigned int m_iHiddenStdParts = 0;
 
-	int m_SortColumns[bhl::sb::MAX_COLUMNS] = {}; //!< Ids of the sort key columns in priority order
+	int m_SortColumns[bhl::sb::MAX_COLUMNS] = {}; //!< Ids of the sort key columns in priority order (ties by id): priority > 0, not Builtin or Badge, Hidden included
 	int m_iSortColumnCount = 0;
 	bool m_bPlayerConnected[MAX_PLAYERS + 1] = {}; //!< Connection state seen by the last Frame
 
@@ -544,12 +491,15 @@ private:
 
 	const Ranking &GetRanking() const;
 	Builtins ComputeBuiltins(const Subject &subject) const;
+	int GetPlace(const Subject &entity) const;
 
 	//! Number of a ranked entity (6.4): its first-key number, or its frags without sort keys
 	bool GetEntityNumber(const Subject &entity, int sortCol, int &out) const;
 
 	//! ComparePlayers or CompareTeams for two entities of the same kind
 	int CompareEntities(const Subject &a, const Subject &b) const;
+
+	const Value &GetEntityValue(const Subject &entity, int col) const { return entity.IsTeam() ? GetTeamValue(entity.iTeam, col) : GetPlayerValue(entity.iPlayer, col); }
 
 	//! Cell of a subject (8.10): the player's, his team's, then global; a team subject starts with its team
 	const Value &GetSubjectValue(const Subject &subject, int col) const;

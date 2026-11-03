@@ -557,8 +557,6 @@ void CHudTimer::Draw(float fTime)
 	if (gHUD.m_iHideHUDDisplay & HIDEHUD_ALL)
 		return;
 
-	const CScoreboardData &data = CScoreboardData::Get();
-
 	// We will take time from demo stream if playingback
 	float currentTime;
 	if (gEngfuncs.pDemoAPI->IsPlayingback())
@@ -581,7 +579,7 @@ void CHudTimer::Draw(float fTime)
 
 	// Draw timer
 	float timeleft = m_flSynced ? (int)(m_flEndTime - currentTime) + 1 : (int)(m_flEndTime - m_flEffectiveTime);
-	int hud_timer = data.IsStdPartHidden(bhl::sb::E_HudStd::Timer) ? 0 : (int)m_pCvarHudTimer->value;
+	int hud_timer = CScoreboardData::Get().IsStdPartHidden(bhl::sb::E_HudStd::Timer) ? 0 : (int)m_pCvarHudTimer->value;
 	int ypos = ScreenHeight * TIMER_Y;
 	switch (hud_timer)
 	{
@@ -606,7 +604,7 @@ void CHudTimer::Draw(float fTime)
 	}
 
 	// Draw next map
-	int hud_nextmap = data.IsStdPartHidden(bhl::sb::E_HudStd::NextMap) ? 0 : (int)m_pCvarHudNextmap->value;
+	int hud_nextmap = CScoreboardData::Get().IsStdPartHidden(bhl::sb::E_HudStd::NextMap) ? 0 : (int)m_pCvarHudNextmap->value;
 	if (m_szNextmap[0] && timeleft < 60 && timeleft >= 0 && m_flEndTime > 0 && (hud_nextmap == 2 || (hud_nextmap == 1 && timeleft >= 37)))
 	{
 		snprintf(text, sizeof(text), "Nextmap is %s", m_szNextmap);
@@ -631,7 +629,7 @@ void CHudTimer::Draw(float fTime)
 		else if (m_flCustomTimerEnd[i] > currentTime)
 		{
 			// Only the display is hidden: the sound at the end still plays
-			if (data.IsStdPartHidden(bhl::sb::E_HudStd::CustomTimers))
+			if (CScoreboardData::Get().IsStdPartHidden(bhl::sb::E_HudStd::CustomTimers))
 				continue;
 
 			timeleft = (int)(m_flCustomTimerEnd[i] - currentTime) + 1;

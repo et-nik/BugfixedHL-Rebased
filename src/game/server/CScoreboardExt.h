@@ -1,7 +1,10 @@
 #ifndef CSCOREBOARDEXT_H
 #define CSCOREBOARDEXT_H
 
+#include <bitset>
 #include <cstdint>
+#include <deque>
+#include <optional>
 #include <string>
 #include <IScoreboardExt.h>
 #include <ScoreboardProtocol.h>
@@ -71,7 +74,6 @@ private:
 	static constexpr int BUDGET = 512; //!< Bytes per client per BUDGET_PERIOD
 	static constexpr float BUDGET_PERIOD = 0.1f; //!< Seconds; about 5 KB/s per client, which the reliable channel drains
 	static constexpr float FULL_SYNC_DELAY = 0.5f; //!< Seconds after InitHUD before the full sync starts
-	static constexpr int MAX_MSG_CELLS = bhl::sb::MAX_MSG_SIZE / 3;
 	static constexpr int MAX_QUEUED_EVENTS = 8; //!< Events per client; the oldest is dropped
 
 	struct value_t
@@ -119,7 +121,7 @@ private:
 		char select[bhl::sb::MAX_REF_LEN + 1] = {};
 		char value[bhl::sb::MAX_REF_LEN + 1] = {};
 		char list[bhl::sb::MAX_KEY_LEN + 1] = {};
-		bhl::sb::ParamMask paramsSet = 0; //!< Bit per param id: set by HudSetParam, sent
+		uint64_t paramsSet = 0; //!< Bit per param id: set by HudSetParam, sent
 		int params[bhl::sb::MAX_PARAM_ID + 1] = {};
 		unsigned int slotsSet = 0; //!< Bit per color slot: set by HudSetSlotColor, sent
 		int slotColors[bhl::sb::MAX_COLOR_SLOTS][4] = {};
@@ -129,17 +131,14 @@ private:
 	{
 		char key[bhl::sb::MAX_KEY_LEN + 1] = {}; //!< Empty if the id is free
 		element_def_t def;
-		bool isVisible = true; //!< Default visibility
 		std::string texts[bhl::sb::MAX_VARIANTS]; //!< Default templates, "" if the variant has none
 	};
 
 	//! Per-player texts and visibility (5.4). Kept apart from client_state_t, which a full sync resets.
 	struct player_hud_t
 	{
-		unsigned int visibleSet = 0; //!< Bit per element id: the player has his own visibility
-		unsigned int visible = 0;
-		uint8_t textsSet[bhl::sb::MAX_ELEMENTS] = {}; //!< Bit per variant: the player has his own text
-		std::string texts[bhl::sb::MAX_ELEMENTS][bhl::sb::MAX_VARIANTS];
+		unsigned int visibleToggled = 0; //!< Bit per element id: the player sees the opposite of the default
+		std::optional<std::string> texts[bhl::sb::MAX_ELEMENTS][bhl::sb::MAX_VARIANTS]; //!< The player's own texts
 	};
 
 	//! Kept apart from client_state_t, so that a full sync doesn't refill the budget
@@ -161,13 +160,6 @@ private:
 		value_t args[bhl::sb::MAX_EVENT_ARGS];
 	};
 
-	struct event_queue_t
-	{
-		event_t events[MAX_QUEUED_EVENTS]; //!< A ring, the oldest at first
-		int first = 0;
-		int count = 0;
-	};
-
 	struct client_state_t
 	{
 		bool isResetPending = false;
@@ -176,26 +168,16 @@ private:
 		unsigned int listsResized = 0; //!< Bit per list id
 		uint64_t listItemsDirty[bhl::sb::MAX_LISTS] = {};
 		unsigned int cellsDirty[MAX_TARGETS] = {}; //!< Bit per column id
-		uint64_t playersCleared = 0; //!< Bit (slot - 1): all cells of the player must be cleared
-		uint64_t teamsCleared = 0; //!< Bit (team number - 1): all cells of the team number must be cleared
+		std::bitset<bhl::sb::TARGET_TEAM_LAST + 1> targetsCleared; //!< Bit per wire target: all its cells must be cleared
 		int teamNumbers[MAX_TEAMS] = {}; //!< Team number the cells of a team slot were sent with, 0 if none
-		bool isRemoveAllPending = false;
 		unsigned int elementsPending = 0; //!< Bit per element id: definition, or removal if the id is free
 		unsigned int elementsSent = 0; //!< Bit per element id the client has
 		unsigned int textsDropped = 0; //!< Bit per element id: texts dropped, a client that has the element gets a removal before the definition
 		uint8_t sentParents[bhl::sb::MAX_ELEMENTS] = {}; //!< Parent id the client got with the element, for ids in elementsSent
 		uint8_t templatesPending[bhl::sb::MAX_ELEMENTS] = {}; //!< Bit per variant
 		uint8_t templatesSent[bhl::sb::MAX_ELEMENTS] = {}; //!< Bit per variant the client has a text for
-		bool isHudStatePending = false;
 		unsigned int sentVisible = 0; //!< HudState the client has
 		unsigned int sentHidden = 0;
-	};
-
-	struct msg_cell_t
-	{
-		int wire; //!< Target as sent
-		int target; //!< Index in m_Cells, -1 to clear all cells of the wire target
-		int column;
 	};
 
 	bool m_bActive = false;
@@ -214,22 +196,19 @@ private:
 	value_t m_Cells[MAX_TARGETS][bhl::sb::MAX_COLUMNS];
 
 	element_t m_Elements[bhl::sb::MAX_ELEMENTS];
+	unsigned int m_iVisible = 0; //!< Bit per existing element id: default visibility
 	unsigned int m_iHiddenStd = 0; //!< E_HudStd
 	player_hud_t m_PlayerHud[MAX_PLAYERS + 1];
 
 	client_state_t m_Clients[MAX_PLAYERS + 1];
 	pacing_t m_Pacing[MAX_PLAYERS + 1];
-	event_queue_t m_Events[MAX_PLAYERS + 1];
+	std::deque<event_t> m_Events[MAX_PLAYERS + 1];
 
 	int m_iBytesLeft = 0;
-	msg_cell_t m_MsgCells[MAX_MSG_CELLS];
-	int m_iMsgCellCount = 0;
-	int m_iMsgSize = 0;
 
 	//! Clears the state of every plugin and turns the extension off; team targets stay valid
 	void ClearState();
 	void Activate();
-	int GetCellTarget(int target);
 	bool IsValidHudPlayer(int player);
 	int FindColumn(const char *key);
 	int FindList(const char *key);
@@ -237,40 +216,25 @@ private:
 	int FindFreeElementId();
 	bool SetColumn(const column_t &definition);
 	void SetCell(int target, const char *key, const value_t &value);
-	void ClearCell(int target, int column);
+	void StoreCell(int target, int column, const value_t &value);
 	void SetListItem(const char *key, int index, const value_t &value);
+	unsigned int GetFilledCells(int target);
 
 	//! Returns false and changes nothing if the Element message would be larger than MAX_MSG_SIZE
 	bool SetElementDef(int id, const element_def_t &def);
 	void RemoveElement(int id);
 	void DropTexts(int id);
 	const std::string &GetText(int player, int id, int variant);
-	unsigned int GetVisibleElements(int player);
 
-	//! Whether the client gets events: a scoreboard client with HudV1
-	bool IsEventClient(int idx);
-	void QueueEvent(int idx, const event_t &event);
-
-	//! Milliseconds the client shows the line of an event of the element id (-1 if there is none)
-	int GetEventLife(const event_t &event, int id);
-
-	void MarkColumn(int id);
-	void MarkBadges(const char *host);
 	void MarkElement(int id);
 	void MarkChildren(const char *parent);
-	void MarkHudState();
 
 	//! Returns false if the budget ran out before everything was sent
 	bool SendToClient(int idx);
-	void UpdateClientTeams(client_state_t &state);
-	bool BeginMessage(edict_t *pEdict, int size);
+	bool BeginMessage(edict_t *pEdict, int size, bhl::sb::E_Op op);
 	bool SendHeader(edict_t *pEdict, client_state_t &state);
-	bool SendColumn(edict_t *pEdict, int id);
 	bool SendLists(edict_t *pEdict, client_state_t &state);
-	bool SendList(edict_t *pEdict, client_state_t &state, int id);
 	bool SendValues(edict_t *pEdict, client_state_t &state);
-	bool AddValuesCell(edict_t *pEdict, client_state_t &state, int wire, int target, int column);
-	bool FlushValues(edict_t *pEdict, client_state_t &state);
 	bool SendElements(edict_t *pEdict, client_state_t &state);
 	static int GetElementSize(const element_def_t &def);
 	bool SendElement(edict_t *pEdict, client_state_t &state, int id);
@@ -279,10 +243,10 @@ private:
 	bool SendHudState(edict_t *pEdict, int idx, client_state_t &state);
 	bool SendEvents(edict_t *pEdict, int idx, client_state_t &state);
 
+	static value_t MakeValue(bhl::sb::E_ValueType type, const char *sprite, const char *text);
 	static bool IsEqual(const value_t &a, const value_t &b);
 	static bool IsEqual(const column_t &a, const column_t &b);
 	static bool IsEqual(const element_def_t &a, const element_def_t &b);
-	static int GetParamCount(const element_def_t &def);
 	static int GetEventSize(const event_t &event);
 	static int GetValueSize(const value_t &value);
 	static void WriteValue(const value_t &value);

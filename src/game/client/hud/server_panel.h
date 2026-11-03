@@ -55,9 +55,8 @@ private:
 		int iFontTall = 0;
 		int iAnchor = 0; //!< Horizontal anchor of the box: alignment of Feed lines
 
-		//! Text, the counter of a Meter or the text after an Icon
+		//! Text, the counter of a Meter or the text after an Icon; "" if there is none
 		wchar_t wszText[bhl::sb::TEMPLATE_BUF_LEN] = {};
-		bool bHasText = false;
 		int iTextWide = 0;
 		int iTextX = 0, iTextY = 0; //!< Text; also the line of the markers and texts of a Strip
 
@@ -82,7 +81,6 @@ private:
 
 		// Icon (8.9)
 		int iSprite = -1;
-		int iIconX = 0, iIconY = 0;
 		int iIconWide = 0, iIconTall = 0;
 	};
 
@@ -121,6 +119,14 @@ private:
 		RowState rows[MAX_ROWS];
 	};
 
+	//! A line of an announcer Feed and its interval, all 0 for none
+	struct AnnouncerAnchor
+	{
+		int iSeq = 0; //!< CScoreboardData::HudLine::iSeq
+		float flStart = 0;
+		float flEnd = 0;
+	};
+
 	//! Effects of an element (8.13), kept between frames
 	struct EffectState
 	{
@@ -140,14 +146,7 @@ private:
 		float flFadeTime = 0;
 		int iFadeMs = 0;
 		float flFade = 0; //!< Fade factor of this frame
-	};
-
-	//! A line of an announcer Feed and its interval, all 0 for none
-	struct AnnouncerAnchor
-	{
-		int iSeq = 0; //!< CScoreboardData::HudLine::iSeq
-		float flStart = 0;
-		float flEnd = 0;
+		AnnouncerAnchor anchor; //!< Announcer Feeds (queue 1): the last started line, so evicting older lines doesn't move the later ones
 	};
 
 	//! Param defaults by bhl::sb::E_Param, from HudLayoutBase.res and clamped to bhl::sb::PARAM_INFO
@@ -156,6 +155,7 @@ private:
 	//! Fonts by bhl::sb::E_Font, from bhl::sb::FONT_NAMES of the scheme
 	vgui2::HFont m_Fonts[bhl::sb::FONT_COUNT] = {};
 
+	const CScoreboardData &m_Data = CScoreboardData::Get();
 	ElementState m_States[bhl::sb::MAX_ELEMENTS];
 
 	//! Sprite indexes of the list items of Strip elements, valid while the store serial is m_iStripSpriteSerial
@@ -173,9 +173,6 @@ private:
 
 	//! Markers of a Strip with track 1: players other than the subject by cell
 	unsigned char m_iTrackCounts[bhl::sb::MAX_ELEMENTS][bhl::sb::MAX_LIST_ITEMS] = {};
-
-	//! Announcer Feeds (queue 1): the last started line, so evicting older lines doesn't move the later ones
-	AnnouncerAnchor m_Anchors[bhl::sb::MAX_ELEMENTS];
 
 	//! CScoreboardData::GetResetCount() seen last: after a Reset the content signatures start over
 	int m_iResetCount = -1;
@@ -199,14 +196,10 @@ private:
 	bool MeasureBoard(int id, const CScoreboardData::Element &el, const CScoreboardData::Subject &subject, ElementState &state);
 	bool MeasureFeed(int id, const CScoreboardData::Element &el, ElementState &state);
 
-	/**
-	 * Positions of the texts and the icon in the placed box.
-	 * @param	anchor	Horizontal anchor of the box: with the right one the Meter counter goes to the left
-	 */
-	void PlaceContent(const CScoreboardData::Element &el, int anchor, ElementState &state);
+	//! Anchor of the placed box and positions of its texts: with the end (right) anchor the Meter counter goes to the left
+	void PlaceContent(const CScoreboardData::Element &el, ElementState &state);
 
 	void UpdateStripSprites();
-	int GetIconSprite(int id, const char *sprite);
 	void SetRowIcon(RowState &row, const char *sprite, int tall);
 	void UpdateTrack(int id, const CScoreboardData::Subject &subject, int count);
 
@@ -214,7 +207,7 @@ private:
 	RowsState &GetRows(int id);
 
 	//! Rows to draw: those of the ghost for a ghost
-	const RowsState &GetPaintRows(int id, const ElementState &state) const;
+	const RowsState &GetPaintRows(int id, const ElementState &state) const { return state.bGhost ? *m_pGhostRows[id] : *m_pRows[id]; }
 
 	/**
 	 * Keeps the state of the elements drawn in the last frame that have fade_ms,
@@ -246,7 +239,7 @@ private:
 	int GetParam(const CScoreboardData::Element &el, bhl::sb::E_Param param) const;
 
 	//! Color for a part of the element (8.5): part * a / 255 * hud_draw, with the fade and pulse
-	Color GetColor(const ElementState &state, int partAlpha) const;
+	Color GetColor(const ElementState &state, int partAlpha) const { return GetColor(state, state.color, partAlpha); }
 	Color GetColor(const ElementState &state, Color color, int partAlpha) const;
 
 	//! Color of a Board row or a Feed line: the color slot of its variant unless the element warns

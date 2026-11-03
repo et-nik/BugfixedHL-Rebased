@@ -29,12 +29,9 @@ CON_COMMAND(bhl_caps, "Prints capabilities of connected clients")
 //! Parses "_bhl": 1 to 8 hex digits without a sign, spaces or prefix, anything else is 0. Unknown bits are dropped.
 static bhl::E_ClientCaps ParseClientCaps(const char *value)
 {
-	if (!value)
-		return bhl::E_ClientCaps::None;
-
 	size_t len = strlen(value);
 
-	if (len < 1 || len > 8 || strspn(value, "0123456789abcdefABCDEF") != len)
+	if (len > 8 || strspn(value, "0123456789abcdefABCDEF") != len)
 		return bhl::E_ClientCaps::None;
 
 	return (bhl::E_ClientCaps)(strtoul(value, nullptr, 16) & (unsigned long)bhl::E_ClientCaps::All);
@@ -69,8 +66,9 @@ void CBugfixedServer::ClientConnect(edict_t *pEntity)
 	m_pClientInfo[idx].isConnected = true;
 	m_pClientInfo[idx].isBot = (pEntity->v.flags & FL_FAKECLIENT) || (authId && !strcmp(authId, "BOT"));
 	m_pClientInfo[idx].isProxy = IsProxy(pEntity);
-	m_Scoreboard.ClearPlayer(idx);
-	ReadClientCaps(pEntity, g_engfuncs.pfnGetInfoKeyBuffer(pEntity));
+
+	// The engine's ClientUserInfoChanged ran before ClientConnect, ResetPlayerData dropped its caps
+	ClientUserInfoChanged(pEntity, g_engfuncs.pfnGetInfoKeyBuffer(pEntity));
 
 	if ((m_pClientInfo[idx].isBot || m_pClientInfo[idx].isProxy) && m_pClientInfo[idx].capsSource == CAPS_SOURCE_UNKNOWN)
 		m_pClientInfo[idx].capsSource = CAPS_SOURCE_NONE;
@@ -176,7 +174,21 @@ void CBugfixedServer::ClientUserInfoChanged(edict_t *pEntity, char *infobuffer)
 	if (idx < 1 || idx > gpGlobals->maxClients)
 		return;
 
-	ReadClientCaps(pEntity, infobuffer);
+	bhl_client_info_t &clientInfo = m_pClientInfo[idx];
+	const char *value = g_engfuncs.pfnInfoKeyValue(infobuffer, bhl::sb::CAPS_KEY);
+
+	if (value[0])
+	{
+		SetClientCaps(idx, ParseClientCaps(value), CAPS_SOURCE_USERINFO);
+	}
+	else if (clientInfo.capsSource == CAPS_SOURCE_USERINFO)
+	{
+		clientInfo.capsSource = CAPS_SOURCE_UNKNOWN;
+		clientInfo.isCapsQueried = false;
+
+		if (clientInfo.isReady)
+			QueryClientCaps(pEntity);
+	}
 }
 
 void CBugfixedServer::ClientDisconnect(edict_t *pEntity)
@@ -185,7 +197,6 @@ void CBugfixedServer::ClientDisconnect(edict_t *pEntity)
 	if (idx < 1 || idx > gpGlobals->maxClients)
 		return;
 
-	m_Scoreboard.ClearPlayer(idx);
 	ResetPlayerData(idx);
 }
 
@@ -211,10 +222,7 @@ void CBugfixedServer::StartFrame()
 	for (int i = 1; i <= gpGlobals->maxClients; i++)
 	{
 		if (m_pClientInfo[i].isConnected && GETPLAYERUSERID(INDEXENT(i)) == -1)
-		{
-			m_Scoreboard.ClearPlayer(i);
 			ResetPlayerData(i);
-		}
 	}
 
 	m_Scoreboard.StartFrame();
@@ -225,22 +233,9 @@ void CBugfixedServer::ServerDeactivate()
 	// Clients that stay connect again on the new map. A slot dropped before spawning on this map
 	// gets an edict again there, so StartFrame could no longer see that it is empty.
 	for (bhl_client_info_t &clientInfo : m_pClientInfo)
-	{
-		clientInfo.isConnected = false;
-		clientInfo.isReady = false;
-	}
+		clientInfo.isConnected = clientInfo.isReady = false;
 
 	m_Scoreboard.ClearAll();
-}
-
-bool CBugfixedServer::IsClientConnected(int idx)
-{
-	return m_pClientInfo[idx].isConnected;
-}
-
-bool CBugfixedServer::IsScoreboardClient(int idx)
-{
-	return m_pClientInfo[idx].isReady && IsEnumFlagSet(GetNormalizedCaps(idx), bhl::E_ClientCaps::ScoreboardV1);
 }
 
 void CBugfixedServer::QueryUnknownClientCaps()
@@ -260,18 +255,15 @@ void CBugfixedServer::PrintClientCaps()
 
 	for (int i = 1; i <= gpGlobals->maxClients; i++)
 	{
-		const bhl_client_info_t &clientInfo = m_pClientInfo[i];
-
-		if (!clientInfo.isConnected)
-			continue;
-
-		g_engfuncs.pfnServerPrint(UTIL_VarArgs("%4d %-32s %8x %s\n", i, STRING(INDEXENT(i)->v.netname), (unsigned int)GetNormalizedCaps(i), sourceNames[clientInfo.capsSource]));
+		if (m_pClientInfo[i].isConnected)
+			g_engfuncs.pfnServerPrint(UTIL_VarArgs("%4d %-32s %8x %s\n", i, STRING(INDEXENT(i)->v.netname), (unsigned int)GetClientCaps(i), sourceNames[m_pClientInfo[i].capsSource]));
 	}
 }
 
 void CBugfixedServer::ResetPlayerData(int idx)
 {
 	m_pClientInfo[idx] = bhl_client_info_t();
+	m_Scoreboard.ClearPlayer(idx);
 }
 
 void CBugfixedServer::CheckClientSteamID(edict_t *pEntity)
@@ -285,32 +277,37 @@ void CBugfixedServer::CheckClientSteamID(edict_t *pEntity)
 	}
 	else
 	{
-		E_CvarQuery query = GetCvarQueryState(pEntity);
+		bool isAuthed = false;
+		bool allowQuery = false;
+		const char *authId = GETPLAYERAUTHID(pEntity);
 
-		if (query != CVARQUERY_PENDING)
+		if (authId)
 		{
-			clientInfo.isAuthed = true;
+			if (strcmp(authId, "STEAM_ID_PENDING") != 0)
+			{
+				isAuthed = true;
+				clientInfo.isAuthed = true;
 
-			if (query == CVARQUERY_ALLOWED)
+				if (!strcmp(authId, "STEAM_ID_LAN") || !strncmp(authId, "VALVE_", 6))
+				{
+					// p47 clients don't support QueryClientCvarValue2
+					allowQuery = false;
+				}
+				else
+				{
+					allowQuery = true;
+				}
+			}
+		}
+
+		if (isAuthed)
+		{
+			if (allowQuery)
 				QueryClientCvars(pEntity);
 			else
 				QueryUnsupportedClientCvars(pEntity);
 		}
 	}
-}
-
-CBugfixedServer::E_CvarQuery CBugfixedServer::GetCvarQueryState(edict_t *pEntity)
-{
-	const char *authId = GETPLAYERAUTHID(pEntity);
-
-	if (!authId || !strcmp(authId, "STEAM_ID_PENDING"))
-		return CVARQUERY_PENDING;
-
-	// p47 clients don't support QueryClientCvarValue2
-	if (!strcmp(authId, "STEAM_ID_LAN") || !strncmp(authId, "VALVE_", 6))
-		return CVARQUERY_DENIED;
-
-	return CVARQUERY_ALLOWED;
 }
 
 void CBugfixedServer::QueryClientCvars(edict_t *pEntity)
@@ -338,26 +335,6 @@ void CBugfixedServer::OnClientSupportsReceived(edict_t *pEntity)
 	m_pClientInfo[ENTINDEX(pEntity)].isSupportsReceived = true;
 }
 
-void CBugfixedServer::ReadClientCaps(edict_t *pEntity, char *infobuffer)
-{
-	int idx = ENTINDEX(pEntity);
-	bhl_client_info_t &clientInfo = m_pClientInfo[idx];
-	const char *value = g_engfuncs.pfnInfoKeyValue(infobuffer, bhl::sb::CAPS_KEY);
-
-	if (value[0])
-	{
-		SetClientCaps(idx, ParseClientCaps(value), CAPS_SOURCE_USERINFO);
-	}
-	else if (clientInfo.capsSource == CAPS_SOURCE_USERINFO)
-	{
-		clientInfo.capsSource = CAPS_SOURCE_UNKNOWN;
-		clientInfo.isCapsQueried = false;
-
-		if (clientInfo.isReady)
-			QueryClientCaps(pEntity);
-	}
-}
-
 void CBugfixedServer::QueryClientCaps(edict_t *pEntity)
 {
 	int idx = ENTINDEX(pEntity);
@@ -371,17 +348,18 @@ void CBugfixedServer::QueryClientCaps(edict_t *pEntity)
 	if (!m_Scoreboard.IsActive() && !sv_bhl_query_vars.GetBool())
 		return;
 
-	E_CvarQuery query = (clientInfo.isBot || clientInfo.isProxy) ? CVARQUERY_DENIED : GetCvarQueryState(pEntity);
+	const char *authId = GETPLAYERAUTHID(pEntity);
 
-	if (query == CVARQUERY_ALLOWED)
+	// Bots and HLTV don't answer, p47 clients don't support QueryClientCvarValue2
+	if (clientInfo.isBot || clientInfo.isProxy || (authId && (!strcmp(authId, "STEAM_ID_LAN") || !strncmp(authId, "VALVE_", 6))))
+	{
+		SetClientCaps(idx, bhl::E_ClientCaps::None, CAPS_SOURCE_NONE);
+	}
+	else if (authId && strcmp(authId, "STEAM_ID_PENDING") != 0)
 	{
 		clientInfo.isCapsQueried = true;
 		clientInfo.nextCapsRequery = gpGlobals->time + CAPS_REQUERY_INTERVAL;
 		g_engfuncs.pfnQueryClientCvarValue2(pEntity, bhl::sb::CAPS_KEY, REQUESTID_CAPS);
-	}
-	else if (query == CVARQUERY_DENIED)
-	{
-		SetClientCaps(idx, bhl::E_ClientCaps::None, CAPS_SOURCE_NONE);
 	}
 	else
 	{
@@ -399,17 +377,6 @@ void CBugfixedServer::SetClientCaps(int idx, bhl::E_ClientCaps caps, E_CapsSourc
 	// A client that lost the cap is skipped by the scoreboard without a Reset
 	if (!hadScoreboard && IsScoreboardClient(idx))
 		m_Scoreboard.StartFullSync(idx, false);
-}
-
-bhl::E_ClientCaps CBugfixedServer::GetNormalizedCaps(int idx)
-{
-	const bhl_client_info_t &clientInfo = m_pClientInfo[idx];
-
-	// HudV1 alone would make a plugin drop its HUD texts for a client that gets no data
-	if (!clientInfo.isConnected || clientInfo.isBot || clientInfo.isProxy || !IsEnumFlagSet(clientInfo.caps, bhl::E_ClientCaps::ScoreboardV1))
-		return bhl::E_ClientCaps::None;
-
-	return clientInfo.caps;
 }
 
 //----------------------------------------------------------------------------------------------------
@@ -584,7 +551,14 @@ bhl::E_ClientCaps CBugfixedServer::GetClientCaps(int idx)
 		UTIL_LogPrintf("CBugfixedServer::GetClientCaps(): invalid player id (%d)\n", idx);
 		return bhl::E_ClientCaps::None;
 	}
-	return GetNormalizedCaps(idx);
+
+	const bhl_client_info_t &clientInfo = m_pClientInfo[idx];
+
+	// HudV1 alone would make a plugin drop its HUD texts for a client that gets no data
+	if (!clientInfo.isConnected || clientInfo.isBot || clientInfo.isProxy || !IsEnumFlagSet(clientInfo.caps, bhl::E_ClientCaps::ScoreboardV1))
+		return bhl::E_ClientCaps::None;
+
+	return clientInfo.caps;
 }
 
 bhl::IScoreboardExt *CBugfixedServer::GetScoreboard()

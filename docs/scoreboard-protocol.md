@@ -109,8 +109,8 @@ values and sprite files) without a new bit; draft 2 builds are not supported eit
   userinfo from the first connect.
 - One owner function, `CHud::UpdateCapsUserinfo()`, computes the caps from the build
   features and client settings and writes `_bhl`. It runs:
-  - on the first frame after configs have been executed (`m_NextFrameQueue`);
-  - when a related client setting changes;
+  - from `CHud::Frame` on any frame where the caps or `_bhl` differ from the written ones (`m_iCaps`
+    starts at -1): after the configs have been executed and when a related client setting changes;
   - on every `VidInit`.
 
   A value typed by the user is overwritten by the next call.
@@ -235,10 +235,10 @@ Strings:
 
 | Op     | Name       | Payload                                        |
 |--------|------------|------------------------------------------------|
-| `0x00` | `Reset`    | Protocol version                               |
+| `0x00` | `Reset`    | None                                           |
 | `0x01` | `Config`   | Hidden standard columns, title, tag            |
 | `0x02` | `Column`   | One column definition                          |
-| `0x03` | `Values`   | Cells for one or more targets                  |
+| `0x03` | `Values`   | Cells of one target                            |
 | `0x04` | `List`     | Items of one list                              |
 | `0x05` | `Element`  | One HUD element definition, or a removal       |
 | `0x06` | `Template` | One template variant of an element             |
@@ -248,14 +248,11 @@ Strings:
 
 #### `Reset` (`0x00`)
 
-| Field     | Type   | Notes                 |
-|-----------|--------|-----------------------|
-| `version` | `byte` | Protocol version, `1` |
+No fields: the message is the opcode alone. Trailing bytes are ignored (4.1), so later versions
+may append fields.
 
 The client drops the schema, all cells, lists, elements and templates, sets the HUD state to "no
-element visible, no standard part hidden" and returns to the standard scoreboard. `version` is
-informational: the client reads the fields it knows. A version 1 client accepts any `version ≥ 1`
-and ignores a `Reset` with `version 0`.
+element visible, no standard part hidden" and returns to the standard scoreboard.
 
 #### `Config` (`0x01`)
 
@@ -351,11 +348,10 @@ badges.
 
 #### `Values` (`0x03`)
 
-The payload is a sequence of groups that runs to the end of the message:
+The payload is one target and its cells, which run to the end of the message:
 
 ```
-Values := op:byte(0x03) Group+
-Group  := target:byte count:byte Cell{count}
+Values := op:byte(0x03) target:byte Cell+
 Cell   := column:byte Value
 Value  := type:byte len:byte payload:byte{len}
 ```
@@ -367,7 +363,7 @@ Targets:
 | `0x00`        | The whole game                                       |
 | `0x01`–`0x40` | Player 1–64                                          |
 | `0x81`–`0xC0` | Team 1–64, numbered like `teamnumber` in `ScoreInfo` |
-| other         | Reserved: the client skips the group                 |
+| other         | Reserved: the client ignores the message             |
 
 Cell fields:
 
@@ -389,8 +385,8 @@ Value types:
 | other | —          | any     | Unknown type: the cell is cleared                      |
 
 - A known type with a wrong `len` or a broken payload clears the cell.
-- If the message ends in the middle of a group or a cell, the client keeps the cells it has
-  already applied and drops the rest.
+- If the message ends in the middle of a cell, the client keeps the cells it has already applied
+  and drops the rest.
 - Cells of columns that don't exist yet are stored and shown when the column arrives.
 - `Icon.sprite` is a sprite name from `hud.txt`, the same names the kill feed uses (`d_9mmAR`),
   or the path of a sprite file: `sprites/<name>.spr`, at most 31 bytes of `[A-Za-z0-9_./-]`
@@ -437,14 +433,14 @@ List := op:byte(0x04) id:byte total:byte start:byte key:string Value*
 Element   := op:byte(0x05) id:byte kind:byte
              flags:word x:short y:short align:byte place:byte parent:byte gap:byte
              color:byte{4} font:byte select:string value:string list:string
-             count:byte Param{count} [colors:byte ColorSlot{colors}]
+             count:byte Param{count} colors:byte ColorSlot{colors}
 Param     := id:byte value:short
 ColorSlot := slot:byte r:byte g:byte b:byte a:byte
 ```
 
 | Field       | Type           | Notes                                                                                                      |
 |-------------|----------------|------------------------------------------------------------------------------------------------------------|
-| `id`        | `byte`         | 0–31, assigned by the server. `0xFF` with kind `None` removes every element                                |
+| `id`        | `byte`         | 0–31, assigned by the server                                                                               |
 | `kind`      | `byte`         | See below; `None` and unknown values remove the element                                                    |
 | `flags`     | `word`         | See below                                                                                                  |
 | `x`         | `short`        | Horizontal position in 1/8192 of the screen width; `-8192` (−1.0) is the center (8.4)                      |
@@ -460,7 +456,7 @@ ColorSlot := slot:byte r:byte g:byte b:byte a:byte
 | `list`      | `string`       | `Strip`: key of the list with the icons; `Board`: key of the list of rows; `""` otherwise                  |
 | `count`     | `byte`         | Number of params, 0–32                                                                                     |
 | `Param`     | `byte` `short` | Param id and value (8.7–8.9, 8.13–8.16); unknown ids and params of other kinds are ignored, values clamped |
-| `colors`    | `byte`         | Optional: number of color slots, 0–10; sent only when the element has a slot color                         |
+| `colors`    | `byte`         | Number of color slots, 0–10                                                                                |
 | `ColorSlot` | `byte` × 5     | Slot 0–9 and r, g, b, a (8.5); the client skips slots of 10 and above                                      |
 
 Kinds:
@@ -520,18 +516,18 @@ Flags:
 | 3    | `Leader`       | The subject is the first row of the scoreboard order instead of the viewer's subject |
 | 4–15 | reserved       | Sent as 0, ignored                                                                   |
 
-- The client ignores an `Element` with an id of 32 or more (except `0xFF` with `None`), and one
-  that ends before `font`. A missing string, or one without a NUL, means `""`. All `count` params
-  are read while at least 3 bytes remain, unknown ids and params of other kinds included, so the
-  color block after them is found; missing params take their defaults. A missing `colors` means 0,
-  and slots are read while at least 5 bytes remain.
+- The client ignores an `Element` with an id of 32 or more, and one that ends before `font`. A
+  missing string, or one without a NUL, means `""`. All `count` params are read while at least 3
+  bytes remain, unknown ids and params of other kinds included, so the color block after them is
+  found; missing params take their defaults. A missing `colors` means 0, and slots are read while
+  at least 5 bytes remain.
 - The server writes params in ascending id order. Params added in draft 3 have ids from 32 on, so
-  they follow all older ones, and the color block is written only when at least one slot is set:
-  an element that uses nothing of draft 3 is byte-identical to draft 2.
+  they follow all older ones. The color block always follows the params, with `colors` 0 when no
+  slot is set.
 - A definition for an existing id replaces it. An `Element` never changes templates: the client
-  drops the templates of an id only on a removal (kind `None` or an unknown kind, for that id or
-  `0xFF`) and on `Reset`. When the server drops the texts of an element, it sends a removal right
-  before the new definition (5.2).
+  drops the templates of an id only on a removal (kind `None` or an unknown kind, for that id) and
+  on `Reset`. When the server drops the texts of an element, it sends a removal right before the
+  new definition (5.2).
 - The largest message is a `Strip`, the kind with the most params, with every param and every
   color slot: 18 fixed bytes, strings of 22, 22 and 16 bytes, 1 + 17 × 3 bytes of params and
   1 + 10 × 5 bytes of colors, 181 bytes. The server still refuses a change that would make an
@@ -610,15 +606,15 @@ Player 5 is on level 12 of 24 with the MP5 and has 1 of 3 kills. Column ids: `le
 
 ```
 03                                         op Values
-05 03                                      target: player 5, 3 cells
+05                                         target: player 5
 01 04 02  0c 18                            level:    Progress, len 2, cur 12, max 24
 02 03 0c  64 5f 39 6d 6d 41 52 00          weapon:   Icon, len 12, sprite "d_9mmAR"
           4d 50 35 00                                text "MP5"
 03 04 02  01 03                            progress: Progress, len 2, cur 1, max 3
 ```
 
-The group takes 27 bytes. With the `kills` and hidden `score` cells (8–10 more bytes) a player
-takes 35–37 bytes, so one message holds 5 players and a full sync of 32 players needs 7 `Values`
+The message takes 27 bytes. With the `kills` and hidden `score` cells (8–10 more bytes) it takes
+35–37 bytes. Every target gets its own message, so a full sync of 32 players sends 32 `Values`
 messages.
 
 ### 4.5 Example: one element
@@ -640,9 +636,10 @@ ff 00                               no parent, gap 0
 70 68 61 73 65 5f 6c 65 66 74 00    value "phase_left"
 00                                  list ""
 00                                  no params
+00                                  no color slots
 ```
 
-The message takes 37 bytes. GunGame also sets four params of 8.13 on this element (9.3), so its
+The message takes 38 bytes. GunGame also sets four params of 8.13 on this element (9.3), so its
 `count` is 4 and 12 bytes of params follow. Variant 0 with a client token takes 18:
 
 ```
@@ -654,18 +651,18 @@ The message takes 37 bytes. GunGame also sets four params of 8.13 on this elemen
 
 | Message                                    | Bytes                         |
 |--------------------------------------------|-------------------------------|
-| `Reset`                                    | 2                             |
+| `Reset`                                    | 1                             |
 | `Config`                                   | ~8                            |
 | `Column` × 9                               | ~14–34                        |
 | `List` `levels`, 24 levels                 | 2 × ≤ 192                     |
-| `Values`, 32 players                       | 7 × ≤ 192                     |
-| `Element` × 10                             | 25–49, ~360 in all            |
+| `Values`, 32 players                       | 32 × 33–51                    |
+| `Element` × 10                             | 26–50, ~370 in all            |
 | `Template` × 17, plugin texts in Russian   | 18–115, ~850 in all           |
 | `HudState`                                 | 7                             |
-| Level-up of one player                     | ~33, +17 when `final` changes |
+| Level-up of one player                     | ~32, +17 when `final` changes |
 | `Event` of a level change, to each `HudV1` | 6–~40                         |
-| Kill without level-up                      | ~18                           |
-| Warmup second                              | ~8                            |
+| Kill without level-up                      | ~17                           |
+| Warmup second                              | ~7                            |
 | Warmup start or end                        | ~190                          |
 
 At the start and the end of the warmup the GunGame plugin sends the `level`, `weapon`, `progress`,
@@ -715,12 +712,12 @@ One object in `hl.so`, `CScoreboardExt`, holds the config, the columns, the list
 the whole game, every player and every team, the HUD elements with their default templates and
 visibility, the hidden standard HUD parts, and the per-player overrides of templates and
 visibility (5.4). For each client it also keeps `caps`, their source, a `ready` flag (set after
-`InitHUD`), pending `Reset`, header, elements, templates and HUD state, and sets of dirty cells
-and list items. Apart from this sync state it keeps a queue of events for each client (5.6).
+`InitHUD`), pending `Reset`, header, elements and templates, the sent HUD state, and sets of dirty
+cells and list items. Apart from this sync state it keeps a queue of events for each client (5.6).
 
 - Column masks have 32 bits, one per column id. The mask of all columns is built without
   `1u << 32`, which is undefined in C++. The params of an element have a 64-bit mask
-  (`ParamMask`, ids 0–63), its color slots a mask of 10 bits.
+  (ids 0–63), its color slots a mask of 10 bits.
 - Element parents and badge hosts are stored as keys and resolved to ids when a message is built,
   `0xFF` when the key doesn't exist. Adding, removing or re-adding an element or a column marks
   pending every element or badge column that names it.
@@ -740,10 +737,10 @@ Plugins only change the state and mark the changes pending for every ready clien
 1. `Reset`, if one is pending;
 2. `Config`, if it is pending, and every pending `Column`;
 3. the dirty list items packed into `List` messages;
-4. the dirty cells packed into `Values` messages;
+4. the dirty cells, one `Values` message per target (more when its cells don't fit in 192 bytes);
 5. every pending `Element`: definitions and removals;
 6. every pending `Template`, with the text for this client;
-7. `HudState`, if it is pending, with the visibility for this client;
+7. `HudState`, if it differs from what the client has, with the visibility for this client;
 8. the queued events of this client, in order (5.6).
 
 A client gets at most about 512 bytes per 0.1 s, so the rate stays about 5 KB/s at any server
@@ -803,7 +800,7 @@ The hidden standard HUD parts have no overrides.
 |-----------------------------|-------------------------------------------------------------------------------------------|
 | Map change                  | State and event queues are cleared; the plugin sets everything again                      |
 | Plugin resets the extension | `Reset` to every ready client; event queues are cleared; the extension is off             |
-| Plugin removes an element   | `Element` with kind `None`; `0xFF` when it removes all                                    |
+| Plugin removes an element   | `Element` with kind `None`, for each removed element the client has                       |
 | Player disconnects          | Slot cells, overrides and event queue are cleared; `0xFF`/`None` for the slot to everyone |
 | Player changes team         | Nothing: placement comes from `TeamInfo` and `ScoreInfo`                                  |
 | Client loses `ScoreboardV1` | Nothing more is sent to that client                                                       |
@@ -966,18 +963,6 @@ visibility; the client knows no game mode.
   - the server name is narrowed so that the name and the tag end before the banner;
   - the banner is laid out again whenever the evaluated text of a row changes, and on every change
     of the header (server name, map name, player count, tag).
-
-### 6.9 Debug commands
-
-- `hud_scoreboard_test [off]` fills the store with fake data for the current players without a
-  server. It builds real `BhlScore` messages and feeds them to the parser: columns `rank`, `stage`
-  (`Steps`, `MarkLast`), `item` (`Icon`), `progress` (`Meter`), hidden `score` as the first sort
-  key, a badge after `item`, a list `items`, and elements that use the client tokens (place line,
-  rival line, meter, strip, banner).
-- `hud_scoreboard_dump` prints the store: schema, cells, lists, elements with their params and slot
-  colors, templates with their parse errors, the HUD state, the subject and the built-in values.
-- `hud_server_eval "<template>"` prints the template evaluated for the current subject and lists
-  the missing refs.
 
 ## 7. Client behaviour: standard scoreboard
 
@@ -1319,7 +1304,7 @@ Parsing:
 - A placeholder takes at most one of `cur`, `max` and `left`, at most one of `time`, `time2`,
   `name`, `team` and word forms, and at most one cut, a number from 1 to 255. A repeated or
   conflicting format, a cut out of range or more than 16 placeholders is a parse error: the
-  variant draws nothing and `hud_scoreboard_dump` shows the error.
+  variant draws nothing.
 - The client parses a template once when it arrives.
 
 Refs:
@@ -2587,8 +2572,9 @@ without the client knowing the language:
 ### 10.3 Weapon names
 
 Names of standard HL weapons are the same in every language, as in the mockup. They are tokens
-`BHL_Weapon_<sprite without d_>` with English text in every language file. An `Icon` value with a
-`d_*` sprite shows this name; for other sprites `Icon.text` from the server is used.
+`BHL_Weapon_<sprite without d_>` with English text in the English file, which the other languages
+fall back to. An `Icon` value with a `d_*` sprite shows this name; for other sprites `Icon.text`
+from the server is used.
 
 | Sprite         | Name     |
 |----------------|----------|
@@ -2651,9 +2637,8 @@ Module and server DLL:
 
 Draft 3 changes nothing for old clients, Valve, AG and OpenAG clients, old servers and existing
 plugins: everything new travels in `BhlScore`, which only `ScoreboardV1` clients get, as a new
-opcode, new kinds, params from id 32 and an optional block at the end of `Element`. An element
-that uses none of it is byte-identical to draft 2, and the old natives keep their behaviour; the
-new methods and natives are appended (9.1, 9.2).
+opcode, new kinds, params from id 32 and a block at the end of `Element`. The old natives keep
+their behaviour; the new methods and natives are appended (9.1, 9.2).
 
 Draft test builds are not supported: the client, `hl.so`, the module and the plugin are updated
 together. In draft 1 builds `_bhl` bit 1 and `Config` mean something else, and their `hl.so`
@@ -2704,11 +2689,11 @@ Protocol and server:
   `Icon` without a value, each as a parent; `cell_min_wide` and `cell_gap` at their minimum at
   640×480. No division by zero.
 - A template of 188 bytes is set; one of 189 bytes is refused with an error.
-- An element that uses nothing of draft 3 is byte-identical to the draft 2 message. A `Strip` with
-  all 17 params and all 10 color slots (181 bytes) is read whole; a slot of 10 or more and params
-  of other kinds are skipped and the slots after them still apply.
+- An element without slot colors is sent with `colors` 0. A `Strip` with all 17 params and all 10
+  color slots (181 bytes) is read whole; a slot of 10 or more and params of other kinds are skipped
+  and the slots after them still apply.
 - A param of every kind on each kind; a param of another kind is refused. `bhl_hud_slot_color()`
-  with `r = -1` clears the slot, and the element is sent without the color block again.
+  with `r = -1` clears the slot, and the element is sent with `colors` 0 again.
 - Events: to player 0 and to one player; a client without `HudV1`, or not ready yet, gets nothing,
   also later; an event during the full sync of a client waits and arrives after its `HudState`; an
   event for an element removed before it was sent waits and is dropped after its life; 9 events in
@@ -2720,7 +2705,7 @@ Protocol and server:
 - The new module with a draft 2 `hl.so` (API 1.3): `bhl_sb_available()` is false,
   `bhl_get_client_caps()` 0, the other natives log one error and do nothing.
 
-Templates (`hud_server_eval` and an offline table run through the parser):
+Templates (an offline table run through the parser):
 
 - Word forms for 0, 1, 2, 5, 11, 12, 21, 22, 25 and −1 with 1, 2 and 3 forms, with and without `#`.
 - `time` for −5, 0, 15, 75, 3600; `time2` for an `Int` and for running, stopped and counting-down
@@ -2736,8 +2721,7 @@ Templates (`hud_server_eval` and an offline table run through the parser):
 - An element whose `value` is `@value`, `^@value` or `@value:cur`: the value is missing, without
   recursion.
 - `@index`, `@item` and `@value` in ranking and list boards; `@a`–`@d`, `{@a:name}`, `@icon` and an
-  arg of an unknown type in events; all of them and `{^@a}` are missing in a `Text` element and in
-  `hud_server_eval`.
+  arg of an unknown type in events; all of them and `{^@a}` are missing in a `Text` element.
 - A `Board` template with TABs: 1, 4 and 5 columns.
 
 HUD elements of draft 3:

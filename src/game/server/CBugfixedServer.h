@@ -30,10 +30,10 @@ public:
 	void StartFrame();
 	void ServerDeactivate();
 
-	bool IsClientConnected(int idx);
+	bool IsClientConnected(int idx) { return m_pClientInfo[idx].isConnected; }
 
 	//! Whether the client gets "BhlScore": passed InitHUD, has ScoreboardV1, not a bot or HLTV
-	bool IsScoreboardClient(int idx);
+	bool IsScoreboardClient(int idx) { return m_pClientInfo[idx].isReady && IsEnumFlagSet(GetClientCaps(idx), bhl::E_ClientCaps::ScoreboardV1); }
 
 	//! Queries "_bhl" from clients that passed InitHUD and haven't reported it
 	void QueryUnknownClientCaps();
@@ -57,13 +57,6 @@ private:
 		REQUESTID_COLOR,
 		REQUESTID_CAPS,
 		REQUESTID_END
-	};
-
-	enum E_CvarQuery
-	{
-		CVARQUERY_ALLOWED = 0,
-		CVARQUERY_DENIED, //!< p47 or LAN client
-		CVARQUERY_PENDING //!< No SteamID yet
 	};
 
 	enum E_CapsSource
@@ -103,16 +96,11 @@ private:
 
 	void ResetPlayerData(int idx);
 	void CheckClientSteamID(edict_t *pEntity);
-	E_CvarQuery GetCvarQueryState(edict_t *pEntity);
 	void QueryClientCvars(edict_t *pEntity);
 	void QueryUnsupportedClientCvars(edict_t *pEntity);
 	void OnClientSupportsReceived(edict_t *pEntity);
-	void ReadClientCaps(edict_t *pEntity, char *infobuffer);
 	void QueryClientCaps(edict_t *pEntity);
 	void SetClientCaps(int idx, bhl::E_ClientCaps caps, E_CapsSource source);
-
-	//! Caps as plugins see them (3.1): HudV1 only with ScoreboardV1, None for bots, HLTV and empty slots
-	bhl::E_ClientCaps GetNormalizedCaps(int idx);
 
 public:
 	//----------------------------------------------------------------------------------------------------

@@ -1,5 +1,7 @@
 #include <cstdarg>
 #include <cstdio>
+#include <type_traits>
+#include <utility>
 #include "amxxmodule.h"
 #include "bhl_api.h"
 #include <ScoreboardProtocol.h>
@@ -183,6 +185,8 @@ static int g_iClientCapsChangedFwd = -1;
 static bhl::E_ClientCaps g_ClientCaps[32 + 1];
 static bool g_bScoreboardErrorLogged = false;
 
+extern AMX_NATIVE_INFO bugfixedapi_Exports[];
+
 //! Returns the file name of the plugin that owns amx, for log messages
 static const char *GetPluginName(AMX *amx)
 {
@@ -204,24 +208,30 @@ static const char *GetPluginName(AMX *amx)
 
 /**
  * Returns true if the server has the scoreboard and HUD extension.
- * Otherwise logs once per map. Errors are logged with MF_Log: MF_LogError would abort the plugin's callback.
+ * Otherwise logs once per map, with the name native is registered under.
+ * Errors are logged with MF_Log: MF_LogError would abort the plugin's callback.
  */
-static bool CheckScoreboardApi(AMX *amx, const char *native)
+static bool CheckScoreboardApi(AMX *amx, AMX_NATIVE native)
 {
 	if (bhl::IsScoreboardApiReady())
 		return true;
 
 	if (!g_bScoreboardErrorLogged)
 	{
+		const AMX_NATIVE_INFO *info = bugfixedapi_Exports;
+
+		while (info->func != native)
+			info++;
+
 		if (bhl::IsServerApiReady())
 		{
 			int major = 0, minor = 0;
 			bhl::GetServerApiVersion(major, minor);
-			MF_Log("%s: server API %d.%d doesn't support the scoreboard and HUD extension (requires %d.%d). bhl_sb_* and bhl_hud_* natives will not function (plugin \"%s\").", native, major, minor, IBUGFIXEDSERVER_MAJOR, bhl::SCOREBOARD_API_MINOR, GetPluginName(amx));
+			MF_Log("%s: server API %d.%d doesn't support the scoreboard and HUD extension (requires %d.%d). bhl_sb_* and bhl_hud_* natives will not function (plugin \"%s\").", info->name, major, minor, IBUGFIXEDSERVER_MAJOR, bhl::SCOREBOARD_API_MINOR, GetPluginName(amx));
 		}
 		else
 		{
-			MF_Log("%s: server API is not available. bhl_sb_* and bhl_hud_* natives will not function (plugin \"%s\").", native, GetPluginName(amx));
+			MF_Log("%s: server API is not available. bhl_sb_* and bhl_hud_* natives will not function (plugin \"%s\").", info->name, GetPluginName(amx));
 		}
 
 		g_bScoreboardErrorLogged = true;
@@ -230,8 +240,8 @@ static bool CheckScoreboardApi(AMX *amx, const char *native)
 	return false;
 }
 
-//! Logs one line for a bhl_hud_* call that failed
-static void LogHudError(AMX *amx, const char *native, const char *key, const char *fmt, ...)
+//! Logs one line for a bhl_hud_* call that failed. Returns 0, the result of the failed native.
+static cell LogHudError(AMX *amx, const char *native, const char *key, const char *fmt, ...)
 {
 	char reason[512];
 	va_list args;
@@ -240,17 +250,62 @@ static void LogHudError(AMX *amx, const char *native, const char *key, const cha
 	va_end(args);
 
 	MF_Log("%s: %s (element \"%s\", plugin \"%s\").", native, reason, key, GetPluginName(amx));
+	return 0;
 }
 
-// native BhlSbTarget:bhl_sb_team(const teamName[])
-static cell AMX_NATIVE_CALL bhl_sb_team(AMX *amx, cell *params)
+//! Converts param Pos + 1 of a native to argument Pos of an IScoreboardExt method; a string uses the AMXX buffer Pos
+template <typename T, int Pos>
+static T GetMethodArg(AMX *amx, cell *params)
 {
-	if (!CheckScoreboardApi(amx, __func__))
-		return -1;
+	if constexpr (std::is_same_v<T, const char *>)
+	{
+		static_assert(Pos < 4, "AMXX has 4 string buffers");
+		return MF_GetAmxString(amx, params[Pos + 1], Pos, nullptr);
+	}
+	else
+	{
+		static_assert(std::is_integral_v<T>, "only strings and integers are forwarded, a float needs amx_ctof");
+		return static_cast<T>(params[Pos + 1]);
+	}
+}
 
-	int length;
-	const char *teamName = MF_GetAmxString(amx, params[1], 0, &length);
-	return (cell)bhl::serverapi()->GetScoreboard()->GetTeamTarget(teamName);
+//! Calls the method with the params of the native in order; a void method returns 1
+template <typename R, typename... Args, int... Pos>
+static cell CallMethod(AMX *amx, cell *params, bhl::IScoreboardExt *sb, R (bhl::IScoreboardExt::*method)(Args...), std::integer_sequence<int, Pos...>)
+{
+	if constexpr (std::is_void_v<R>)
+	{
+		(sb->*method)(GetMethodArg<Args, Pos>(amx, params)...);
+		return 1;
+	}
+	else
+	{
+		return (cell)(sb->*method)(GetMethodArg<Args, Pos>(amx, params)...);
+	}
+}
+
+template <typename R, typename... Args>
+static cell CallMethod(AMX *amx, cell *params, bhl::IScoreboardExt *sb, R (bhl::IScoreboardExt::*method)(Args...))
+{
+	return CallMethod(amx, params, sb, method, std::make_integer_sequence<int, sizeof...(Args)>());
+}
+
+/**
+ * Calls a bhl_sb_* or bhl_hud_* native, or returns FailValue if CheckScoreboardApi fails.
+ * Native is a function (AMX *, cell *, bhl::IScoreboardExt *) or an IScoreboardExt method that takes the params in order.
+ */
+template <auto Native, cell FailValue = 0>
+static cell AMX_NATIVE_CALL ScoreboardNative(AMX *amx, cell *params)
+{
+	if (!CheckScoreboardApi(amx, ScoreboardNative<Native, FailValue>))
+		return FailValue;
+
+	bhl::IScoreboardExt *sb = bhl::serverapi()->GetScoreboard();
+
+	if constexpr (std::is_member_function_pointer_v<decltype(Native)>)
+		return CallMethod(amx, params, sb, Native);
+	else
+		return Native(amx, params, sb);
 }
 
 // native BhlClientCaps:bhl_get_client_caps(idx)
@@ -270,280 +325,71 @@ static cell AMX_NATIVE_CALL bhl_sb_available(AMX *amx, cell *params)
 	return bhl::IsScoreboardApiReady();
 }
 
-// native bhl_sb_reset()
-static cell AMX_NATIVE_CALL bhl_sb_reset(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-	bhl::serverapi()->GetScoreboard()->Reset();
-	return 1;
-}
-
-// native bhl_sb_config(BhlSbHide:hide, const title[] = "", const tag[] = "")
-static cell AMX_NATIVE_CALL bhl_sb_config(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *title = MF_GetAmxString(amx, params[2], 0, &length);
-	const char *tag = MF_GetAmxString(amx, params[3], 1, &length);
-	bhl::serverapi()->GetScoreboard()->SetConfig(static_cast<unsigned int>(params[1]), title, tag);
-	return 1;
-}
-
-// native bool:bhl_sb_add_column(const key[], const title[], BhlSbDisplay:display = BHL_SB_TEXT, width = 0, sort = 0, BhlSbColumnFlags:flags = BHL_SB_COL_NONE)
-static cell AMX_NATIVE_CALL bhl_sb_add_column(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[1], 0, &length);
-	const char *title = MF_GetAmxString(amx, params[2], 1, &length);
-	return (cell)bhl::serverapi()->GetScoreboard()->AddColumn(key, title, params[3], params[4], params[5], static_cast<unsigned int>(params[6]));
-}
-
-// native bool:bhl_sb_add_badge(const key[], const host[])
-static cell AMX_NATIVE_CALL bhl_sb_add_badge(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[1], 0, &length);
-	const char *host = MF_GetAmxString(amx, params[2], 1, &length);
-	return (cell)bhl::serverapi()->GetScoreboard()->AddBadge(key, host);
-}
-
-// native bhl_sb_set_int(BhlSbTarget:target, const key[], value)
-static cell AMX_NATIVE_CALL bhl_sb_set_int(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[2], 0, &length);
-	bhl::serverapi()->GetScoreboard()->SetInt(params[1], key, params[3]);
-	return 1;
-}
-
-// native bhl_sb_set_text(BhlSbTarget:target, const key[], const text[])
-static cell AMX_NATIVE_CALL bhl_sb_set_text(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[2], 0, &length);
-	const char *text = MF_GetAmxString(amx, params[3], 1, &length);
-	bhl::serverapi()->GetScoreboard()->SetText(params[1], key, text);
-	return 1;
-}
-
-// native bhl_sb_set_icon(BhlSbTarget:target, const key[], const sprite[], const text[])
-static cell AMX_NATIVE_CALL bhl_sb_set_icon(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[2], 0, &length);
-	const char *sprite = MF_GetAmxString(amx, params[3], 1, &length);
-	const char *text = MF_GetAmxString(amx, params[4], 2, &length);
-	bhl::serverapi()->GetScoreboard()->SetIcon(params[1], key, sprite, text);
-	return 1;
-}
-
-// native bhl_sb_set_progress(BhlSbTarget:target, const key[], cur, max)
-static cell AMX_NATIVE_CALL bhl_sb_set_progress(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[2], 0, &length);
-	bhl::serverapi()->GetScoreboard()->SetProgress(params[1], key, params[3], params[4]);
-	return 1;
-}
-
-// native bhl_sb_set_clock(BhlSbTarget:target, const key[], ms, BhlSbClock:flags = BHL_SB_CLOCK_RUN)
-static cell AMX_NATIVE_CALL bhl_sb_set_clock(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[2], 0, &length);
-	bhl::serverapi()->GetScoreboard()->SetClock(params[1], key, params[3], static_cast<unsigned int>(params[4]));
-	return 1;
-}
-
-// native bhl_sb_clear(BhlSbTarget:target, const key[] = "")
-static cell AMX_NATIVE_CALL bhl_sb_clear(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[2], 0, &length);
-	bhl::serverapi()->GetScoreboard()->Clear(params[1], key);
-	return 1;
-}
-
-// native bool:bhl_sb_list_resize(const key[], count)
-static cell AMX_NATIVE_CALL bhl_sb_list_resize(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[1], 0, &length);
-	return (cell)bhl::serverapi()->GetScoreboard()->ListResize(key, params[2]);
-}
-
-// native bhl_sb_list_set_int(const key[], index, value)
-static cell AMX_NATIVE_CALL bhl_sb_list_set_int(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[1], 0, &length);
-	bhl::serverapi()->GetScoreboard()->ListSetInt(key, params[2], params[3]);
-	return 1;
-}
-
-// native bhl_sb_list_set_text(const key[], index, const text[])
-static cell AMX_NATIVE_CALL bhl_sb_list_set_text(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[1], 0, &length);
-	const char *text = MF_GetAmxString(amx, params[3], 1, &length);
-	bhl::serverapi()->GetScoreboard()->ListSetText(key, params[2], text);
-	return 1;
-}
-
-// native bhl_sb_list_set_icon(const key[], index, const sprite[], const text[])
-static cell AMX_NATIVE_CALL bhl_sb_list_set_icon(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[1], 0, &length);
-	const char *sprite = MF_GetAmxString(amx, params[3], 1, &length);
-	const char *text = MF_GetAmxString(amx, params[4], 2, &length);
-	bhl::serverapi()->GetScoreboard()->ListSetIcon(key, params[2], sprite, text);
-	return 1;
-}
-
 // native bool:bhl_hud_add(const key[], BhlHudKind:kind, Float:x = -1.0, Float:y = -1.0, BhlHudFont:font = BHL_HUD_FONT_TEXT, BhlHudAlign:align = BHL_HUD_AUTO, BhlHudFlags:flags = BHL_HUD_DEFAULT)
-static cell AMX_NATIVE_CALL bhl_hud_add(AMX *amx, cell *params)
+static cell bhl_hud_add(AMX *amx, cell *params, bhl::IScoreboardExt *sb)
 {
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[1], 0, &length);
+	const char *key = MF_GetAmxString(amx, params[1], 0, nullptr);
 	int kind = params[2];
 
-	if (!bhl::serverapi()->GetScoreboard()->HudAdd(key, kind, amx_ctof(params[3]), amx_ctof(params[4]), params[5], params[6], static_cast<unsigned int>(params[7])))
-	{
-		LogHudError(amx, __func__, key, "invalid key or kind %d, or all %d elements are used", kind, bhl::sb::MAX_ELEMENTS);
-		return 0;
-	}
+	if (!sb->HudAdd(key, kind, amx_ctof(params[3]), amx_ctof(params[4]), params[5], params[6], static_cast<unsigned int>(params[7])))
+		return LogHudError(amx, __func__, key, "invalid key or kind %d, or all %d elements are used", kind, bhl::sb::MAX_ELEMENTS);
 
 	return 1;
 }
 
 // native bool:bhl_hud_place(const key[], BhlHudPlace:place, const parent[] = "", gap = 0)
-static cell AMX_NATIVE_CALL bhl_hud_place(AMX *amx, cell *params)
+static cell bhl_hud_place(AMX *amx, cell *params, bhl::IScoreboardExt *sb)
 {
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[1], 0, &length);
-	const char *parent = MF_GetAmxString(amx, params[3], 1, &length);
+	const char *key = MF_GetAmxString(amx, params[1], 0, nullptr);
+	const char *parent = MF_GetAmxString(amx, params[3], 1, nullptr);
 	int place = params[2];
 
-	if (!bhl::serverapi()->GetScoreboard()->HudSetPlace(key, place, parent, params[4]))
-	{
-		LogHudError(amx, __func__, key, "unknown element or place %d, or invalid parent key \"%s\"", place, parent);
-		return 0;
-	}
+	if (!sb->HudSetPlace(key, place, parent, params[4]))
+		return LogHudError(amx, __func__, key, "unknown element or place %d, or invalid parent key \"%s\"", place, parent);
 
 	return 1;
 }
 
 // native bool:bhl_hud_color(const key[], r = BHL_HUD_COLOR, g = 0, b = 0, a = 255)
-static cell AMX_NATIVE_CALL bhl_hud_color(AMX *amx, cell *params)
+static cell bhl_hud_color(AMX *amx, cell *params, bhl::IScoreboardExt *sb)
 {
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
+	const char *key = MF_GetAmxString(amx, params[1], 0, nullptr);
 
-	int length;
-	const char *key = MF_GetAmxString(amx, params[1], 0, &length);
-
-	if (!bhl::serverapi()->GetScoreboard()->HudSetColor(key, params[2], params[3], params[4], params[5]))
-	{
-		LogHudError(amx, __func__, key, "unknown element");
-		return 0;
-	}
+	if (!sb->HudSetColor(key, params[2], params[3], params[4], params[5]))
+		return LogHudError(amx, __func__, key, "unknown element");
 
 	return 1;
 }
 
 // native bool:bhl_hud_bind(const key[], const value[] = "", const list[] = "", const select[] = "")
-static cell AMX_NATIVE_CALL bhl_hud_bind(AMX *amx, cell *params)
+static cell bhl_hud_bind(AMX *amx, cell *params, bhl::IScoreboardExt *sb)
 {
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
+	const char *key = MF_GetAmxString(amx, params[1], 0, nullptr);
+	const char *value = MF_GetAmxString(amx, params[2], 1, nullptr);
+	const char *list = MF_GetAmxString(amx, params[3], 2, nullptr);
+	const char *select = MF_GetAmxString(amx, params[4], 3, nullptr);
 
-	int length;
-	const char *key = MF_GetAmxString(amx, params[1], 0, &length);
-	const char *value = MF_GetAmxString(amx, params[2], 1, &length);
-	const char *list = MF_GetAmxString(amx, params[3], 2, &length);
-	const char *select = MF_GetAmxString(amx, params[4], 3, &length);
-
-	if (!bhl::serverapi()->GetScoreboard()->HudBind(key, value, list, select))
-	{
-		LogHudError(amx, __func__, key, "unknown element, invalid value \"%s\", list \"%s\" or select \"%s\", or the element would exceed %d bytes", value, list, select, bhl::sb::MAX_MSG_SIZE);
-		return 0;
-	}
+	if (!sb->HudBind(key, value, list, select))
+		return LogHudError(amx, __func__, key, "unknown element, invalid value \"%s\", list \"%s\" or select \"%s\", or the element would exceed %d bytes", value, list, select, bhl::sb::MAX_MSG_SIZE);
 
 	return 1;
 }
 
 // native bool:bhl_hud_param(const key[], BhlHudParam:param, value)
-static cell AMX_NATIVE_CALL bhl_hud_param(AMX *amx, cell *params)
+static cell bhl_hud_param(AMX *amx, cell *params, bhl::IScoreboardExt *sb)
 {
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[1], 0, &length);
+	const char *key = MF_GetAmxString(amx, params[1], 0, nullptr);
 	int param = params[2];
 
-	if (!bhl::serverapi()->GetScoreboard()->HudSetParam(key, param, params[3]))
-	{
-		LogHudError(amx, __func__, key, "unknown element, its kind has no param %d, or the element would exceed %d bytes", param, bhl::sb::MAX_MSG_SIZE);
-		return 0;
-	}
+	if (!sb->HudSetParam(key, param, params[3]))
+		return LogHudError(amx, __func__, key, "unknown element, its kind has no param %d, or the element would exceed %d bytes", param, bhl::sb::MAX_MSG_SIZE);
 
 	return 1;
 }
 
 // native bool:bhl_hud_text(player, const key[], variant, const fmt[], any:...)
-static cell AMX_NATIVE_CALL bhl_hud_text(AMX *amx, cell *params)
+static cell bhl_hud_text(AMX *amx, cell *params, bhl::IScoreboardExt *sb)
 {
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
 	int player = params[1];
 	int variant = params[3];
 	int textLength = 0;
@@ -553,116 +399,64 @@ static cell AMX_NATIVE_CALL bhl_hud_text(AMX *amx, cell *params)
 	if (amx->error != AMX_ERR_NONE)
 		return 0;
 
-	int length;
-	const char *key = MF_GetAmxString(amx, params[2], 0, &length);
+	const char *key = MF_GetAmxString(amx, params[2], 0, nullptr);
 
 	// A cut template could end inside a placeholder, so it is refused instead
 	if (textLength > bhl::sb::MAX_TEMPLATE_LEN)
-	{
-		LogHudError(amx, __func__, key, "the text for player %d, variant %d has %d bytes, more than %d", player, variant, textLength, bhl::sb::MAX_TEMPLATE_LEN);
-		return 0;
-	}
+		return LogHudError(amx, __func__, key, "the text for player %d, variant %d has %d bytes, more than %d", player, variant, textLength, bhl::sb::MAX_TEMPLATE_LEN);
 
-	if (!bhl::serverapi()->GetScoreboard()->HudSetText(player, key, variant, text))
-	{
-		LogHudError(amx, __func__, key, "unknown element, variant %d out of range, or player %d out of range or not connected", variant, player);
-		return 0;
-	}
+	if (!sb->HudSetText(player, key, variant, text))
+		return LogHudError(amx, __func__, key, "unknown element, variant %d out of range, or player %d out of range or not connected", variant, player);
 
 	return 1;
 }
 
 // native bool:bhl_hud_show(player, const key[], bool:show = true)
-static cell AMX_NATIVE_CALL bhl_hud_show(AMX *amx, cell *params)
+static cell bhl_hud_show(AMX *amx, cell *params, bhl::IScoreboardExt *sb)
 {
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[2], 0, &length);
+	const char *key = MF_GetAmxString(amx, params[2], 0, nullptr);
 	int player = params[1];
 
-	if (!bhl::serverapi()->GetScoreboard()->HudShow(player, key, params[3] != 0))
-	{
-		LogHudError(amx, __func__, key, "unknown element, or player %d out of range or not connected", player);
-		return 0;
-	}
+	if (!sb->HudShow(player, key, params[3] != 0))
+		return LogHudError(amx, __func__, key, "unknown element, or player %d out of range or not connected", player);
 
-	return 1;
-}
-
-// native bhl_hud_remove(const key[] = "")
-static cell AMX_NATIVE_CALL bhl_hud_remove(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[1], 0, &length);
-	bhl::serverapi()->GetScoreboard()->HudRemove(key);
-	return 1;
-}
-
-// native bhl_hud_hide_std(BhlHudStd:parts, bool:hide = true)
-static cell AMX_NATIVE_CALL bhl_hud_hide_std(AMX *amx, cell *params)
-{
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-	bhl::serverapi()->GetScoreboard()->HudHideStd(static_cast<unsigned int>(params[1]), params[2] != 0);
 	return 1;
 }
 
 // native bool:bhl_hud_slot_color(const key[], slot, r, g, b, a = 255)
-static cell AMX_NATIVE_CALL bhl_hud_slot_color(AMX *amx, cell *params)
+static cell bhl_hud_slot_color(AMX *amx, cell *params, bhl::IScoreboardExt *sb)
 {
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[1], 0, &length);
+	const char *key = MF_GetAmxString(amx, params[1], 0, nullptr);
 	int slot = params[2];
 
-	if (!bhl::serverapi()->GetScoreboard()->HudSetSlotColor(key, slot, params[3], params[4], params[5], params[6]))
-	{
-		LogHudError(amx, __func__, key, "unknown element, slot %d out of range, or the element would exceed %d bytes", slot, bhl::sb::MAX_MSG_SIZE);
-		return 0;
-	}
+	if (!sb->HudSetSlotColor(key, slot, params[3], params[4], params[5], params[6]))
+		return LogHudError(amx, __func__, key, "unknown element, slot %d out of range, or the element would exceed %d bytes", slot, bhl::sb::MAX_MSG_SIZE);
 
 	return 1;
 }
 
 // native bool:bhl_hud_event(player, const key[], variant, life_ms = 0, const sprite[] = "", const sprite_text[] = "", any:...)
-static cell AMX_NATIVE_CALL bhl_hud_event(AMX *amx, cell *params)
+static cell bhl_hud_event(AMX *amx, cell *params, bhl::IScoreboardExt *sb)
 {
 	constexpr int FIXED_PARAMS = 6;
 
-	if (!CheckScoreboardApi(amx, __func__))
-		return 0;
-
-	int length;
-	const char *key = MF_GetAmxString(amx, params[2], 0, &length);
-	const char *sprite = MF_GetAmxString(amx, params[5], 1, &length);
-	const char *spriteText = MF_GetAmxString(amx, params[6], 2, &length);
+	const char *key = MF_GetAmxString(amx, params[2], 0, nullptr);
+	const char *sprite = MF_GetAmxString(amx, params[5], 1, nullptr);
+	const char *spriteText = MF_GetAmxString(amx, params[6], 2, nullptr);
 	int player = params[1];
 	int variant = params[3];
 	int argCount = (int)(params[0] / sizeof(cell)) - FIXED_PARAMS;
 	int args[bhl::sb::MAX_EVENT_INTS] = {};
 
 	if (argCount > bhl::sb::MAX_EVENT_INTS)
-	{
-		LogHudError(amx, __func__, key, "%d numbers, more than %d", argCount, bhl::sb::MAX_EVENT_INTS);
-		return 0;
-	}
+		return LogHudError(amx, __func__, key, "%d numbers, more than %d", argCount, bhl::sb::MAX_EVENT_INTS);
 
 	// Variadic args are passed by reference
 	for (int i = 0; i < argCount; i++)
 		args[i] = *MF_GetAmxAddr(amx, params[FIXED_PARAMS + 1 + i]);
 
-	if (!bhl::serverapi()->GetScoreboard()->HudEvent(player, key, variant, params[4], args, argCount, sprite, spriteText))
-	{
-		LogHudError(amx, __func__, key, "unknown element or not a feed, variant %d out of range, or player %d out of range or not connected", variant, player);
-		return 0;
-	}
+	if (!sb->HudEvent(player, key, variant, params[4], args, argCount, sprite, spriteText))
+		return LogHudError(amx, __func__, key, "unknown element or not a feed, variant %d out of range, or player %d out of range or not connected", variant, player);
 
 	return 1;
 }
@@ -681,34 +475,34 @@ AMX_NATIVE_INFO bugfixedapi_Exports[] = {
 	{ "bhl_show_motd_from_string", bhl_show_motd_from_string },
 	{ "bhl_show_motd_from_file", bhl_show_motd_from_file },
 	{ "bhl_set_player_score", bhl_set_player_score },
-	{ "bhl_sb_team", bhl_sb_team },
+	{ "bhl_sb_team", ScoreboardNative<&bhl::IScoreboardExt::GetTeamTarget, -1> },
 	{ "bhl_get_client_caps", bhl_get_client_caps },
 	{ "bhl_sb_available", bhl_sb_available },
-	{ "bhl_sb_reset", bhl_sb_reset },
-	{ "bhl_sb_config", bhl_sb_config },
-	{ "bhl_sb_add_column", bhl_sb_add_column },
-	{ "bhl_sb_add_badge", bhl_sb_add_badge },
-	{ "bhl_sb_set_int", bhl_sb_set_int },
-	{ "bhl_sb_set_text", bhl_sb_set_text },
-	{ "bhl_sb_set_icon", bhl_sb_set_icon },
-	{ "bhl_sb_set_progress", bhl_sb_set_progress },
-	{ "bhl_sb_set_clock", bhl_sb_set_clock },
-	{ "bhl_sb_clear", bhl_sb_clear },
-	{ "bhl_sb_list_resize", bhl_sb_list_resize },
-	{ "bhl_sb_list_set_int", bhl_sb_list_set_int },
-	{ "bhl_sb_list_set_text", bhl_sb_list_set_text },
-	{ "bhl_sb_list_set_icon", bhl_sb_list_set_icon },
-	{ "bhl_hud_add", bhl_hud_add },
-	{ "bhl_hud_place", bhl_hud_place },
-	{ "bhl_hud_color", bhl_hud_color },
-	{ "bhl_hud_bind", bhl_hud_bind },
-	{ "bhl_hud_param", bhl_hud_param },
-	{ "bhl_hud_text", bhl_hud_text },
-	{ "bhl_hud_show", bhl_hud_show },
-	{ "bhl_hud_remove", bhl_hud_remove },
-	{ "bhl_hud_hide_std", bhl_hud_hide_std },
-	{ "bhl_hud_slot_color", bhl_hud_slot_color },
-	{ "bhl_hud_event", bhl_hud_event },
+	{ "bhl_sb_reset", ScoreboardNative<&bhl::IScoreboardExt::Reset> },
+	{ "bhl_sb_config", ScoreboardNative<&bhl::IScoreboardExt::SetConfig> },
+	{ "bhl_sb_add_column", ScoreboardNative<&bhl::IScoreboardExt::AddColumn> },
+	{ "bhl_sb_add_badge", ScoreboardNative<&bhl::IScoreboardExt::AddBadge> },
+	{ "bhl_sb_set_int", ScoreboardNative<&bhl::IScoreboardExt::SetInt> },
+	{ "bhl_sb_set_text", ScoreboardNative<&bhl::IScoreboardExt::SetText> },
+	{ "bhl_sb_set_icon", ScoreboardNative<&bhl::IScoreboardExt::SetIcon> },
+	{ "bhl_sb_set_progress", ScoreboardNative<&bhl::IScoreboardExt::SetProgress> },
+	{ "bhl_sb_set_clock", ScoreboardNative<&bhl::IScoreboardExt::SetClock> },
+	{ "bhl_sb_clear", ScoreboardNative<&bhl::IScoreboardExt::Clear> },
+	{ "bhl_sb_list_resize", ScoreboardNative<&bhl::IScoreboardExt::ListResize> },
+	{ "bhl_sb_list_set_int", ScoreboardNative<&bhl::IScoreboardExt::ListSetInt> },
+	{ "bhl_sb_list_set_text", ScoreboardNative<&bhl::IScoreboardExt::ListSetText> },
+	{ "bhl_sb_list_set_icon", ScoreboardNative<&bhl::IScoreboardExt::ListSetIcon> },
+	{ "bhl_hud_add", ScoreboardNative<bhl_hud_add> },
+	{ "bhl_hud_place", ScoreboardNative<bhl_hud_place> },
+	{ "bhl_hud_color", ScoreboardNative<bhl_hud_color> },
+	{ "bhl_hud_bind", ScoreboardNative<bhl_hud_bind> },
+	{ "bhl_hud_param", ScoreboardNative<bhl_hud_param> },
+	{ "bhl_hud_text", ScoreboardNative<bhl_hud_text> },
+	{ "bhl_hud_show", ScoreboardNative<bhl_hud_show> },
+	{ "bhl_hud_remove", ScoreboardNative<&bhl::IScoreboardExt::HudRemove> },
+	{ "bhl_hud_hide_std", ScoreboardNative<&bhl::IScoreboardExt::HudHideStd> },
+	{ "bhl_hud_slot_color", ScoreboardNative<bhl_hud_slot_color> },
+	{ "bhl_hud_event", ScoreboardNative<bhl_hud_event> },
 	{ nullptr, nullptr }
 };
 
@@ -777,11 +571,6 @@ void OnPluginsLoaded()
 	g_bScoreboardErrorLogged = false;
 }
 
-void OnPluginsUnloading()
-{
-	g_iClientCapsChangedFwd = -1;
-}
-
 void StartFrame()
 {
 	if (bhl::IsScoreboardApiReady())
@@ -795,7 +584,7 @@ void StartFrame()
 
 			g_ClientCaps[i] = caps;
 
-			if (g_iClientCapsChangedFwd != -1 && MF_IsPlayerIngame(i))
+			if (MF_IsPlayerIngame(i))
 				MF_ExecuteForward(g_iClientCapsChangedFwd, static_cast<cell>(i));
 		}
 	}

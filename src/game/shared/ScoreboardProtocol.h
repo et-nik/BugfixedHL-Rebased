@@ -1,5 +1,6 @@
 #ifndef SCOREBOARDPROTOCOL_H
 #define SCOREBOARDPROTOCOL_H
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <enum_utils.h>
@@ -11,7 +12,6 @@
 namespace bhl::sb
 {
 
-constexpr int PROTOCOL_VERSION = 1;
 constexpr const char *MSG_NAME = "BhlScore";
 constexpr const char *CAPS_KEY = "_bhl";
 
@@ -40,19 +40,8 @@ constexpr int MAX_PLACEHOLDERS = 16; //!< Placeholders in one template
 constexpr int MAX_CUT = 255; //!< Largest cut format of a placeholder
 constexpr int MAX_EVAL_LEN = 255; //!< Evaluated text, in UTF-16 units
 
-//! Message sizes, including the opcode byte
-constexpr int RESET_SIZE = 2;
-constexpr int ELEMENT_FIXED_SIZE = 18; //!< Opcode to font: an Element that ends before font is ignored
-constexpr int ELEMENT_REMOVAL_SIZE = 3; //!< Element with kind None
-constexpr int TEMPLATE_HEADER_SIZE = 3; //!< Opcode, id and variant
-constexpr int HUDSTATE_SIZE = 7;
-constexpr int EVENT_HEADER_SIZE = 6; //!< Opcode, id, variant, life and count
-
 //! Id that means "every column of the target" (Values, only with E_ValueType::None)
 constexpr int ALL_COLUMNS = 0xFF;
-
-//! Id that means "every element" (Element, only with E_ElementKind::None)
-constexpr int ALL_ELEMENTS = 0xFF;
 
 //! Column host and element parent when there is none
 constexpr int NO_ID = 0xFF;
@@ -85,15 +74,7 @@ inline int PositionToWire(float f)
 	if (std::isnan(f))
 		return 0;
 
-	double value = std::floor(static_cast<double>(f) * POS_SCALE + 0.5);
-
-	if (value < -32768.0)
-		return -32768;
-
-	if (value > 32767.0)
-		return 32767;
-
-	return static_cast<int>(value);
+	return static_cast<int>(std::clamp(std::floor(static_cast<double>(f) * POS_SCALE + 0.5), -32768.0, 32767.0));
 }
 
 //----------------------------------------------------------------------------------------------------
@@ -180,6 +161,12 @@ constexpr int DEFAULT_WIDTH_ICON = 100;
 constexpr int DEFAULT_WIDTH_METER = 90;
 constexpr int DEFAULT_WIDTH_STEPS = 60;
 
+//! Width of a column whose width is 0
+inline int GetDefaultWidth(E_Display display)
+{
+	return display == E_Display::Icon ? DEFAULT_WIDTH_ICON : display == E_Display::Meter ? DEFAULT_WIDTH_METER : display == E_Display::Steps ? DEFAULT_WIDTH_STEPS : DEFAULT_WIDTH_TEXT;
+}
+
 //----------------------------------------------------------------------------------------------------
 // HUD elements (4.3, 8)
 //----------------------------------------------------------------------------------------------------
@@ -195,11 +182,9 @@ enum class E_ElementKind : unsigned int
 	Box = 7, //!< Backdrop of the group of its parent
 };
 
-constexpr E_ElementKind LAST_ELEMENT_KIND = E_ElementKind::Box;
-
 inline bool IsKnownKind(int kind)
 {
-	return kind >= static_cast<int>(E_ElementKind::Text) && kind <= static_cast<int>(LAST_ELEMENT_KIND);
+	return kind >= static_cast<int>(E_ElementKind::Text) && kind <= static_cast<int>(E_ElementKind::Box);
 }
 
 //! Color slots of an element: variants 0-7, then these (4.3, 8.5)
@@ -242,36 +227,13 @@ inline bool IsBannerPlace(E_Place place)
 	return place == E_Place::BannerTop || place == E_Place::BannerBottom;
 }
 
-//! Horizontal anchor: bits 0-1 of the align byte
-enum class E_HAlign : unsigned int
-{
-	Auto = 0,
-	Left = 1,
-	Center = 2,
-	Right = 3,
-};
-
-//! Vertical anchor: bits 2-3 of the align byte
-enum class E_VAlign : unsigned int
-{
-	Auto = 0,
-	Top = 1,
-	Middle = 2,
-	Bottom = 3,
-};
+//! Anchors in the align byte: bits 0-1 horizontal, bits 2-3 vertical
+constexpr int ANCHOR_AUTO = 0;
+constexpr int ANCHOR_START = 1; //!< Left or top edge
+constexpr int ANCHOR_CENTER = 2;
+constexpr int ANCHOR_END = 3; //!< Right or bottom edge
 
 constexpr int ALIGN_MASK = 0x0F;
-constexpr int ALIGN_V_SHIFT = 2;
-
-inline E_HAlign GetHAlign(int align)
-{
-	return static_cast<E_HAlign>(align & 3);
-}
-
-inline E_VAlign GetVAlign(int align)
-{
-	return static_cast<E_VAlign>((align >> ALIGN_V_SHIFT) & 3);
-}
 
 //! Font of an element (8.5). Unknown ids are Text.
 enum class E_Font : unsigned int
@@ -350,13 +312,6 @@ enum class E_Param : unsigned int
 };
 
 constexpr int MAX_PARAM_ID = 63; //!< Param ids fit a 64-bit mask
-
-using ParamMask = unsigned long long;
-
-inline ParamMask ParamBit(int id)
-{
-	return 1ull << id;
-}
 
 //! Meter forms (param form)
 enum class E_MeterForm : unsigned int
@@ -438,23 +393,16 @@ inline constexpr ParamInfo PARAM_INFO[] = {
 	{ E_Param::Radius, E_ElementKind::Box, "radius", 0, 32, 0 },
 };
 
-//! Returns the info of a param id or nullptr for an unknown id
-inline const ParamInfo *FindParamInfo(int id)
+//! Returns the info of a param of the kind, or nullptr if the kind has no such param
+inline const ParamInfo *FindParamInfo(E_ElementKind kind, int id)
 {
 	for (const ParamInfo &info : PARAM_INFO)
 	{
 		if (static_cast<int>(info.id) == id)
-			return &info;
+			return info.kind == kind || info.kind == E_ElementKind::None ? &info : nullptr;
 	}
 
 	return nullptr;
-}
-
-//! Returns the info of a param of the kind, or nullptr if the kind has no such param
-inline const ParamInfo *FindParamInfo(E_ElementKind kind, int id)
-{
-	const ParamInfo *info = FindParamInfo(id);
-	return info && (info->kind == kind || info->kind == E_ElementKind::None) ? info : nullptr;
 }
 
 //! Standard HUD parts that HudState.hide hides (8.12)
@@ -485,17 +433,12 @@ inline bool IsValidKey(const char *key)
 
 /**
  * Checks a ref of Element.select and Element.value (4.3):
- * "[^](key|@name)[:cur|:max|:left]", up to MAX_REF_LEN bytes; name is 1-14 characters of [a-z].
+ * "[^](key|@name)[:cur|:max|:left]", which is at most 21 bytes, below MAX_REF_LEN; name is 1-14 characters of [a-z].
  * Built-in names are not checked against the known ones. "" is not a ref.
  */
 inline bool IsValidRef(const char *ref)
 {
 	if (!ref)
-		return false;
-
-	size_t len = strlen(ref);
-
-	if (len == 0 || len > MAX_REF_LEN)
 		return false;
 
 	const char *name = ref[0] == '^' ? ref + 1 : ref;
@@ -513,11 +456,7 @@ inline bool IsValidRef(const char *ref)
 			return false;
 	}
 
-	if (!format)
-		return true;
-
-	format++;
-	return !strcmp(format, "cur") || !strcmp(format, "max") || !strcmp(format, "left");
+	return !format || !strcmp(format + 1, "cur") || !strcmp(format + 1, "max") || !strcmp(format + 1, "left");
 }
 
 /**
@@ -526,26 +465,16 @@ inline bool IsValidRef(const char *ref)
  */
 inline bool IsSpriteFilePath(const char *sprite)
 {
-	constexpr const char *PREFIX = "sprites/";
-	constexpr const char *SUFFIX = ".spr";
+	constexpr char PREFIX[] = "sprites/";
+	constexpr char SUFFIX[] = ".spr";
+	constexpr size_t PREFIX_LEN = sizeof(PREFIX) - 1;
+	constexpr size_t SUFFIX_LEN = sizeof(SUFFIX) - 1;
+	size_t len = sprite ? strlen(sprite) : 0;
 
-	if (!sprite)
-		return false;
-
-	size_t len = strlen(sprite);
-	size_t prefixLen = strlen(PREFIX);
-	size_t suffixLen = strlen(SUFFIX);
-
-	if (len > MAX_TEXT_LEN || len <= prefixLen + suffixLen)
-		return false;
-
-	if (strncmp(sprite, PREFIX, prefixLen) || strcmp(sprite + len - suffixLen, SUFFIX))
-		return false;
-
-	if (strstr(sprite, ".."))
-		return false;
-
-	return strspn(sprite, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-") == len;
+	return len > PREFIX_LEN + SUFFIX_LEN && len <= MAX_TEXT_LEN
+	    && !strncmp(sprite, PREFIX, PREFIX_LEN) && !strcmp(sprite + len - SUFFIX_LEN, SUFFIX)
+	    && !strstr(sprite, "..")
+	    && strspn(sprite, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-") == len;
 }
 
 }

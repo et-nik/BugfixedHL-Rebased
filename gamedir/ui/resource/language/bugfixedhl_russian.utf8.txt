@@ -41,23 +41,6 @@
 "BHL_HUD_Warmup"					"РАЗМИНКА {@value:time}"
 "BHL_HUD_StartIn"					"СТАРТ ЧЕРЕЗ {@value}"
 
-// Weapon names (the same in every language)
-"BHL_Weapon_crowbar"				"Crowbar"
-"BHL_Weapon_9mmhandgun"				"Glock"
-"BHL_Weapon_357"					".357"
-"BHL_Weapon_9mmAR"					"MP5"
-"BHL_Weapon_shotgun"				"Shotgun"
-"BHL_Weapon_crossbow"				"Crossbow"
-"BHL_Weapon_bolt"					"Crossbow"
-"BHL_Weapon_rpg_rocket"				"RPG"
-"BHL_Weapon_gauss"					"Gauss"
-"BHL_Weapon_egon"					"Egon"
-"BHL_Weapon_hornet"					"Hornet"
-"BHL_Weapon_grenade"				"Grenade"
-"BHL_Weapon_satchel"				"Satchel"
-"BHL_Weapon_tripmine"				"Tripmine"
-"BHL_Weapon_snark"					"Snark"
-
 "BHL_Update_Notif_Title"			"Уведомление об обновлении"
 "BHL_Update_Notif_Text"				"Вышло новое обновление."
 "BHL_Update_Notif_OldVer"			"Ваша версия: "

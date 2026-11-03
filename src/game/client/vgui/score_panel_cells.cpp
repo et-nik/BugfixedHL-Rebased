@@ -48,9 +48,7 @@ int GetBadgePadding(const ScoreCellStyle &style)
 	return vgui2::surface()->GetFontTall(style.hBadgeFont) / 3;
 }
 
-/**
- * Reads the colors of rectangle rc of the first frame of a sprite file, 3 bytes per texel.
- */
+//! Reads the colors of rectangle rc of the first frame of a sprite file, 3 bytes per texel
 bool LoadSpriteRGB(const char *path, const wrect_t &rc, std::vector<unsigned char> &rgb, int &wide, int &tall)
 {
 	int length = 0;
@@ -151,23 +149,6 @@ HSPRITE GetSpriteHandle(int sprite)
 
 	FileSprite *pFile = GetFileSprite(sprite);
 	return pFile ? pFile->hSprite : 0;
-}
-
-/**
- * The engine stops with an error on a missing file when developer is above 1, and on a broken one always:
- * the file is read and checked first.
- */
-void LoadFileSprite(FileSprite &file)
-{
-	std::vector<unsigned char> rgb;
-	int wide = 0;
-	int tall = 0;
-
-	if (!LoadSpriteRGB(file.szPath, wrect_t { 0, SPRITE_MAX_SIZE, 0, SPRITE_MAX_SIZE }, rgb, wide, tall))
-		return;
-
-	file.hSprite = gEngfuncs.pfnSPR_Load(file.szPath);
-	file.rc = wrect_t { 0, wide, 0, tall };
 }
 
 struct ScaleTap
@@ -278,15 +259,12 @@ int GetSpriteTexture(int sprite, int wide, int tall)
 
 	if (s_SpriteTextures.size() > MAX_SPRITE_TEXTURES)
 	{
-		auto oldest = s_SpriteTextures.end();
+		// Created textures come first, by their last use
+		auto oldest = std::min_element(s_SpriteTextures.begin(), s_SpriteTextures.end(), [](const auto &a, const auto &b) {
+			return a.second.id >= 0 && (b.second.id < 0 || a.second.lastUse < b.second.lastUse);
+		});
 
-		for (auto it = s_SpriteTextures.begin(); it != s_SpriteTextures.end(); ++it)
-		{
-			if (it->second.id >= 0 && (oldest == s_SpriteTextures.end() || it->second.lastUse < oldest->second.lastUse))
-				oldest = it;
-		}
-
-		if (oldest != s_SpriteTextures.end())
+		if (oldest->second.id >= 0)
 		{
 			id = oldest->second.id;
 			s_SpriteTextures.erase(oldest);
@@ -305,14 +283,9 @@ int GetSpriteTexture(int sprite, int wide, int tall)
 
 }
 
-CScoreCellImage::CScoreCellImage(const ScoreCellStyle &style)
-    : m_Style(style)
-{
-}
-
 void CScoreCellImage::Clear()
 {
-	m_Kind = Kind::Empty;
+	m_Kind = Kind::Text;
 	m_bMarkLast = false;
 	m_iSprite = -1;
 	m_iCur = 0;
@@ -327,9 +300,7 @@ void CScoreCellImage::SetValue(const CScoreboardData::Column &column, const CSco
 {
 	Clear();
 	m_bMarkLast = column.IsMarkLast();
-
-	if (value.IsEmpty())
-		return;
+	value.ToString(m_wszText, sizeof(m_wszText));
 
 	bhl::sb::E_Display display = column.display;
 
@@ -342,29 +313,20 @@ void CScoreCellImage::SetValue(const CScoreboardData::Column &column, const CSco
 		return;
 	}
 
-	m_Kind = Kind::Text;
-	value.ToString(m_wszText, sizeof(m_wszText));
-
 	if (value.type == bhl::sb::E_ValueType::Icon && display == bhl::sb::E_Display::Icon && value.szSprite[0])
-	{
-		m_Kind = Kind::Icon;
 		m_iSprite = GetScoreSpriteIndex(value.szSprite);
-	}
 }
 
 void CScoreCellImage::SetText(const wchar_t *text)
 {
 	Clear();
-
-	if (text[0])
-	{
-		m_Kind = Kind::Text;
-		V_wcsncpy(m_wszText, text, sizeof(m_wszText));
-	}
+	V_wcsncpy(m_wszText, text, sizeof(m_wszText));
 }
 
-void CScoreCellImage::AddBadge(const wchar_t *text)
+void CScoreCellImage::AddBadge(const CScoreboardData::Value &value)
 {
+	wchar_t text[BADGES_LEN];
+	value.ToString(text, sizeof(text));
 	int len = static_cast<int>(wcslen(text));
 
 	if (len == 0 || m_iBadgesLen + len + 1 > BADGES_LEN)
@@ -375,59 +337,14 @@ void CScoreCellImage::AddBadge(const wchar_t *text)
 	m_iBadgeCount++;
 }
 
-void CScoreCellImage::SetAlign(int align)
-{
-	m_iAlign = align;
-}
-
 void CScoreCellImage::Paint()
 {
-	switch (m_Kind)
-	{
-	case Kind::Text:
-	case Kind::Icon:
-		PaintText();
-		break;
-	case Kind::Meter:
+	if (m_Kind == Kind::Meter)
 		PaintMeter();
-		break;
-	case Kind::Steps:
+	else if (m_Kind == Kind::Steps)
 		PaintSteps();
-		break;
-	case Kind::Empty:
-		// Badges come from cells of their own: they are drawn even when the host cell is empty
-		if (m_iBadgeCount > 0)
-			PaintText();
-		break;
-	}
-}
-
-void CScoreCellImage::SetPos(int x, int y)
-{
-	m_iX = x;
-	m_iY = y;
-}
-
-void CScoreCellImage::GetContentSize(int &wide, int &tall)
-{
-	wide = m_iWide;
-	tall = m_iTall;
-}
-
-void CScoreCellImage::GetSize(int &wide, int &tall)
-{
-	GetContentSize(wide, tall);
-}
-
-void CScoreCellImage::SetSize(int wide, int tall)
-{
-	m_iWide = wide;
-	m_iTall = tall;
-}
-
-void CScoreCellImage::SetColor(Color col)
-{
-	m_Color = col;
+	else
+		PaintText();
 }
 
 int CScoreCellImage::GetAreaWide() const
@@ -438,13 +355,7 @@ int CScoreCellImage::GetAreaWide() const
 int CScoreCellImage::GetAlignOffset(int contentWide, int areaWide)
 {
 	int freeWide = std::max(areaWide - contentWide, 0);
-
-	if (m_iAlign == 1)
-		return freeWide / 2;
-	else if (m_iAlign == 2)
-		return freeWide;
-
-	return 0;
+	return m_iAlign == 1 ? freeWide / 2 : (m_iAlign == 2 ? freeWide : 0);
 }
 
 int CScoreCellImage::GetBadgesWide(int maxWide, int &count)
@@ -489,23 +400,19 @@ void CScoreCellImage::PaintText()
 	int areaWide = GetAreaWide();
 
 	// Sprite scaled to the row height with its aspect ratio kept
+	const wrect_t &rc = GetScoreSpriteRect(m_iSprite);
 	int iconWide = 0;
 	int iconTall = 0;
 
-	if (m_Kind == Kind::Icon && m_iSprite != -1)
+	if (rc.GetWidth() > 0 && rc.GetHeight() > 0)
 	{
-		const wrect_t &rc = GetScoreSpriteRect(m_iSprite);
+		iconTall = std::max(m_iTall - 2 * spacing, 1);
+		iconWide = rc.GetWidth() * iconTall / rc.GetHeight();
 
-		if (rc.GetWidth() > 0 && rc.GetHeight() > 0)
+		if (iconWide > areaWide)
 		{
-			iconTall = std::max(m_iTall - 2 * spacing, 1);
-			iconWide = rc.GetWidth() * iconTall / rc.GetHeight();
-
-			if (iconWide > areaWide)
-			{
-				iconWide = areaWide;
-				iconTall = rc.GetHeight() * iconWide / rc.GetWidth();
-			}
+			iconWide = areaWide;
+			iconTall = rc.GetHeight() * iconWide / rc.GetWidth();
 		}
 	}
 
@@ -544,14 +451,7 @@ void CScoreCellImage::PaintMeter()
 	int areaWide = cellWide - badgesWide;
 
 	// Only the bar has a counter: dots are easy to count
-	wchar_t counter[32] = L"";
-	int counterSpace = 0;
-
-	if (bBar)
-	{
-		V_snwprintf(counter, ARRAYSIZE(counter), L"%d/%d", m_iCur, m_iMax);
-		counterSpace = m_Style.iSpacing + GetCellTextWide(font, counter);
-	}
+	int counterSpace = bBar ? m_Style.iSpacing + GetCellTextWide(font, m_wszText) : 0;
 
 	int gap = m_Style.iDotGap;
 	int dot = (areaWide - counterSpace - (maxDots - 1) * gap) / maxDots;
@@ -581,7 +481,7 @@ void CScoreCellImage::PaintMeter()
 	}
 
 	if (bBar)
-		DrawCellText(font, x + barWide + m_Style.iSpacing, m_iY + (m_iTall - vgui2::surface()->GetFontTall(font)) / 2, m_Color, counter);
+		DrawCellText(font, x + barWide + m_Style.iSpacing, m_iY + (m_iTall - vgui2::surface()->GetFontTall(font)) / 2, m_Color, m_wszText);
 
 	PaintBadges(x + contentWide, m_iY + m_iTall / 2, badgeCount);
 }
@@ -589,8 +489,6 @@ void CScoreCellImage::PaintMeter()
 void CScoreCellImage::PaintSteps()
 {
 	vgui2::HFont font = m_Style.hFont;
-	wchar_t text[32];
-	V_snwprintf(text, ARRAYSIZE(text), L"%d/%d", m_iCur, m_iMax);
 
 	// The strip takes the width that the badges leave
 	int badgeCount = 0;
@@ -601,7 +499,7 @@ void CScoreCellImage::PaintSteps()
 	int textTall = vgui2::surface()->GetFontTall(font);
 	int stripTall = m_Style.iStripTall;
 	int y = m_iY + (m_iTall - (textTall + m_Style.iStripGap + stripTall)) / 2;
-	DrawCellText(font, m_iX + GetAlignOffset(GetCellTextWide(font, text), stripWide), y, m_Color, text);
+	DrawCellText(font, m_iX + GetAlignOffset(GetCellTextWide(font, m_wszText), stripWide), y, m_Color, m_wszText);
 	PaintBadges(m_iX + stripWide, m_iY + m_iTall / 2, badgeCount);
 
 	int stripY = y + textTall + m_Style.iStripGap;
@@ -778,13 +676,19 @@ int GetScoreSpriteIndex(const char *name)
 	}
 
 	FileSprite &file = s_FileSprites[i];
+	std::vector<unsigned char> rgb;
+	int wide = 0;
+	int tall = 0;
 
-	if (!file.bTried)
+	// The engine stops with an error on a missing file when developer is above 1, and on a broken one always:
+	// the file is read and checked first
+	if (!file.bTried && LoadSpriteRGB(file.szPath, wrect_t { 0, SPRITE_MAX_SIZE, 0, SPRITE_MAX_SIZE }, rgb, wide, tall))
 	{
-		file.bTried = true;
-		LoadFileSprite(file);
+		file.hSprite = gEngfuncs.pfnSPR_Load(file.szPath);
+		file.rc = wrect_t { 0, wide, 0, tall };
 	}
 
+	file.bTried = true;
 	return file.hSprite > 0 ? FILE_SPRITE_FIRST - i : -1;
 }
 

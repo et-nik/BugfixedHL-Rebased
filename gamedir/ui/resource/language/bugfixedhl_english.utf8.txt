@@ -41,7 +41,7 @@
 "BHL_HUD_Warmup"					"WARMUP {@value:time}"
 "BHL_HUD_StartIn"					"START IN {@value}"
 
-// Weapon names (the same in every language)
+// Weapon names: English in every language, the other files fall back to this one
 "BHL_Weapon_crowbar"				"Crowbar"
 "BHL_Weapon_9mmhandgun"				"Glock"
 "BHL_Weapon_357"					".357"

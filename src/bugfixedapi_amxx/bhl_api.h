@@ -16,11 +16,7 @@ enum class E_ApiInitResult
 	VersionMismatch // GetInterfaceVersion returned incompatible version
 };
 
-/**
- * Server API minor version that the bhl_sb_* and bhl_hud_* natives need: 1.3 added GetClientCaps and GetScoreboard,
- * 1.4 appended HudSetSlotColor and HudEvent to IScoreboardExt.
- * Draft builds reported 1.2 with an incompatible IScoreboardExt, calling it would crash the server.
- */
+//! Server API minor version of the IScoreboardExt layout the natives call: older draft builds have another one and would crash (docs/scoreboard-protocol.md, 9.1)
 constexpr int SCOREBOARD_API_MINOR = 4;
 
 /**

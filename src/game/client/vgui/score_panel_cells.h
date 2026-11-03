@@ -7,8 +7,8 @@
 #include "scoreboard_data.h"
 
 /**
- * Fonts, colors and sizes of custom scoreboard cells.
- * Owned by CScorePanel and shared by all cells.
+ * Fonts, colors and sizes of custom scoreboard cells, which keep a reference to it:
+ * CScorePanel owns the style of the rows, each CSectionHeader a copy with its font.
  * Fills are drawn opaque: after text the engine may draw translucent fills without blending.
  */
 struct ScoreCellStyle
@@ -38,42 +38,55 @@ struct ScoreCellStyle
 class CScoreCellImage : public vgui2::IImage
 {
 public:
-	CScoreCellImage(const ScoreCellStyle &style);
+	CScoreCellImage(const ScoreCellStyle &style)
+	    : m_Style(style)
+	{
+	}
 
-	/**
-	 * Sets a value of the store drawn as the column shows it (docs/scoreboard-protocol.md, 6.6).
-	 * Clears the badges.
-	 */
+	//! Sets a value of the store drawn as the column shows it (docs/scoreboard-protocol.md, 6.6). Clears the badges.
 	void SetValue(const CScoreboardData::Column &column, const CScoreboardData::Value &value);
 
-	/**
-	 * Sets a text, drawn like a Text cell. Clears the badges.
-	 */
+	//! Sets a text, drawn like a Text cell. Clears the badges.
 	void SetText(const wchar_t *text);
 
 	/**
-	 * Adds a badge after the content (6.7). Badges are drawn in the order they were added,
-	 * as many as fit into the cell. An empty text adds nothing.
+	 * Adds the text of a value as a badge after the content (6.7). Badges are drawn in the order they were added,
+	 * as many as fit into the cell. A value with an empty text adds nothing.
 	 */
-	void AddBadge(const wchar_t *text);
+	void AddBadge(const CScoreboardData::Value &value);
 
 	//! @param	align	0 left, 1 center, 2 right
-	void SetAlign(int align);
+	void SetAlign(int align) { m_iAlign = align; }
 
 	// IImage overrides
 	virtual void Paint() override;
-	virtual void SetPos(int x, int y) override;
-	virtual void GetContentSize(int &wide, int &tall) override;
-	virtual void GetSize(int &wide, int &tall) override;
-	virtual void SetSize(int wide, int tall) override;
-	virtual void SetColor(Color col) override;
+
+	virtual void SetPos(int x, int y) override
+	{
+		m_iX = x;
+		m_iY = y;
+	}
+
+	virtual void GetContentSize(int &wide, int &tall) override
+	{
+		wide = m_iWide;
+		tall = m_iTall;
+	}
+
+	virtual void GetSize(int &wide, int &tall) override { GetContentSize(wide, tall); }
+
+	virtual void SetSize(int wide, int tall) override
+	{
+		m_iWide = wide;
+		m_iTall = tall;
+	}
+
+	virtual void SetColor(Color col) override { m_Color = col; }
 
 private:
 	enum class Kind
 	{
-		Empty,
 		Text,
-		Icon,
 		Meter,
 		Steps,
 	};
@@ -82,7 +95,7 @@ private:
 	static constexpr int BADGES_LEN = 128;
 
 	const ScoreCellStyle &m_Style;
-	Kind m_Kind = Kind::Empty;
+	Kind m_Kind = Kind::Text;
 	bool m_bMarkLast = false;
 	int m_iAlign = 0;
 	int m_iX = 0, m_iY = 0;
@@ -90,7 +103,7 @@ private:
 	int m_iSprite = -1;
 	int m_iCur = 0, m_iMax = 0;
 	Color m_Color = Color(255, 255, 255, 255);
-	wchar_t m_wszText[128] = {};
+	wchar_t m_wszText[128] = {}; //!< Text of the value, also the counter of Meter and Steps
 	wchar_t m_wszBadges[BADGES_LEN] = {}; //!< Badge texts one after another
 	int m_iBadgesLen = 0; //!< Used part of m_wszBadges
 	int m_iBadgeCount = 0;
@@ -119,18 +132,12 @@ private:
  */
 void DrawRoundedBox(int x0, int y0, int x1, int y1, int radius, Color color, int clipX1 = INT_MAX);
 
-/**
- * Draws a badge vertically centered on yCenter.
- */
+//! Draws a badge vertically centered on yCenter
 void DrawScoreBadge(const ScoreCellStyle &style, int x, int yCenter, const wchar_t *text);
 
 int GetScoreBadgeWide(const ScoreCellStyle &style, const wchar_t *text);
 
-/**
- * Draws a sprite of hud.txt stretched to wide x tall and tinted with color, additively like the HUD.
- * OpenGL draws it with TriangleAPI, which blends on its own. The software renderer draws a VGUI2 texture
- * of that size with an alpha test, because VGUI2 doesn't blend there and after text in a paint pass.
- */
+//! Draws a sprite from GetScoreSpriteIndex stretched to wide x tall and tinted with color, additively like the HUD (6.6)
 void DrawScoreSprite(int sprite, int x, int y, int wide, int tall, Color color);
 
 /**
@@ -147,14 +154,10 @@ void ResetScoreSpriteFiles();
 
 void DrawCellText(vgui2::HFont font, int x, int y, Color color, const wchar_t *text);
 
-/**
- * Returns the width of a text drawn by DrawCellText.
- */
+//! Returns the width of a text drawn by DrawCellText
 int GetCellTextWide(vgui2::HFont font, const wchar_t *text);
 
-/**
- * Cuts a text with an ellipsis to fit into maxWide. Returns the width of the result.
- */
+//! Cuts a text with an ellipsis to fit into maxWide. Returns the width of the result.
 int FitCellText(vgui2::HFont font, wchar_t *text, int maxWide);
 
 #endif

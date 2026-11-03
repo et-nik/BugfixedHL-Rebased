@@ -1,5 +1,7 @@
-#include <cstdio>
+#include <algorithm>
+#include <cstdlib>
 #include <cstring>
+#include <cwchar>
 #include <string>
 #include "scoreboard_template.h"
 
@@ -16,41 +18,17 @@ namespace
 	constexpr unsigned int REPLACEMENT_CHAR = 0xFFFD;
 	constexpr int MAX_FORMS = 3;
 
-	struct BuiltinName
-	{
-		const char *pszName;
-		E_Builtin builtin;
-	};
-
-	constexpr BuiltinName BUILTIN_NAMES[] = {
-		{ "place", E_Builtin::Place },
-		{ "total", E_Builtin::Total },
-		{ "state", E_Builtin::State },
-		{ "rival", E_Builtin::Rival },
-		{ "gap", E_Builtin::Gap },
-		{ "pass", E_Builtin::Pass },
-		{ "lead", E_Builtin::Lead },
-		{ "behind", E_Builtin::Behind },
-		{ "score", E_Builtin::Score },
-		{ "frags", E_Builtin::Frags },
-		{ "deaths", E_Builtin::Deaths },
-		{ "name", E_Builtin::Name },
-		{ "value", E_Builtin::Value },
-		{ "item", E_Builtin::Item },
-		{ "index", E_Builtin::Index },
-		{ "a", E_Builtin::A },
-		{ "b", E_Builtin::B },
-		{ "c", E_Builtin::C },
-		{ "d", E_Builtin::D },
-		{ "icon", E_Builtin::Icon },
-	};
+	//! Names of the built-ins after '@', indexed by E_Builtin from Place on
+	constexpr const char *BUILTIN_NAMES[] = { "place", "total", "state", "rival", "gap", "pass", "lead", "behind", "score", "frags",
+		"deaths", "name", "value", "item", "index", "a", "b", "c", "d", "icon" };
+	static_assert(std::size(BUILTIN_NAMES) == static_cast<size_t>(E_Builtin::Icon) - static_cast<size_t>(E_Builtin::Place) + 1, "every built-in needs a name");
 
 	E_Builtin FindBuiltin(const char *name)
 	{
-		for (const BuiltinName &item : BUILTIN_NAMES)
+		for (size_t i = 0; i < std::size(BUILTIN_NAMES); i++)
 		{
-			if (!strcmp(item.pszName, name))
-				return item.builtin;
+			if (!strcmp(BUILTIN_NAMES[i], name))
+				return static_cast<E_Builtin>(static_cast<size_t>(E_Builtin::Place) + i);
 		}
 
 		return E_Builtin::Unknown;
@@ -66,50 +44,15 @@ namespace
 		return c >= '0' && c <= '9';
 	}
 
-	bool IsAsciiAlpha(unsigned int c)
-	{
-		return IsAsciiLower(c) || (c >= 'A' && c <= 'Z');
-	}
-
 	bool IsKeyChar(unsigned int c)
 	{
 		return IsAsciiLower(c) || IsAsciiDigit(c) || c == '_';
 	}
 
-	bool IsHighSurrogate(wchar_t c)
-	{
-		return WIDE_IS_UTF16 && c >= 0xD800 && c <= 0xDBFF;
-	}
-
-	bool IsLowSurrogate(wchar_t c)
-	{
-		return WIDE_IS_UTF16 && c >= 0xDC00 && c <= 0xDFFF;
-	}
-
-	//! Number of wchar_t in the code point at text[0]
+	//! Number of wchar_t in the code point at text[0]: 2 for a UTF-16 surrogate pair
 	size_t GetCodePointSize(const wchar_t *text, size_t len)
 	{
-		return len >= 2 && IsHighSurrogate(text[0]) && IsLowSurrogate(text[1]) ? 2 : 1;
-	}
-
-	//! Number of UTF-16 units of the code point at text[0] that takes size wchar_t
-	int GetUtf16Units(const wchar_t *text, size_t size)
-	{
-		if constexpr (WIDE_IS_UTF16)
-			return static_cast<int>(size);
-
-		return static_cast<unsigned int>(text[0]) > 0xFFFF ? 2 : 1;
-	}
-
-	//! wcslen that doesn't depend on the C library's idea of wchar_t
-	size_t GetWideLength(const wchar_t *text, size_t maxLen)
-	{
-		size_t len = 0;
-
-		while (len < maxLen && text[len])
-			len++;
-
-		return len;
+		return WIDE_IS_UTF16 && len >= 2 && text[0] >= 0xD800 && text[0] <= 0xDBFF && text[1] >= 0xDC00 && text[1] <= 0xDFFF ? 2 : 1;
 	}
 
 	//! Size in wchar_t of the first count code points of text
@@ -218,77 +161,12 @@ namespace
 		return out;
 	}
 
-	//! Encodes wide text as UTF-8 for messages
-	std::string WideToUtf8(const std::wstring &text)
+	//! ms in whole units, rounded up while a clock counts down and down otherwise
+	int DivideClock(int ms, int unit, bool bDown)
 	{
-		std::string out;
-
-		for (size_t i = 0; i < text.size(); i++)
-		{
-			unsigned int cp = static_cast<unsigned int>(text[i]);
-
-			if (IsHighSurrogate(text[i]) && i + 1 < text.size() && IsLowSurrogate(text[i + 1]))
-			{
-				cp = 0x10000 + ((cp - 0xD800) << 10) + (static_cast<unsigned int>(text[i + 1]) - 0xDC00);
-				i++;
-			}
-			else if (cp >= 0xD800 && cp <= 0xDFFF)
-			{
-				cp = REPLACEMENT_CHAR;
-			}
-
-			if (cp > 0x10FFFF)
-				cp = REPLACEMENT_CHAR;
-
-			if (cp < 0x80)
-			{
-				out.push_back(static_cast<char>(cp));
-			}
-			else if (cp < 0x800)
-			{
-				out.push_back(static_cast<char>(0xC0 | (cp >> 6)));
-				out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-			}
-			else if (cp < 0x10000)
-			{
-				out.push_back(static_cast<char>(0xE0 | (cp >> 12)));
-				out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-				out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-			}
-			else
-			{
-				out.push_back(static_cast<char>(0xF0 | (cp >> 18)));
-				out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 0x3F)));
-				out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 0x3F)));
-				out.push_back(static_cast<char>(0x80 | (cp & 0x3F)));
-			}
-		}
-
-		return out;
-	}
-
-	//! Copies ASCII text to a wide buffer
-	void AsciiToWide(const char *text, wchar_t *buf, int bufLen)
-	{
-		if (bufLen <= 0)
-			return;
-
-		int i = 0;
-
-		for (; text[i] && i < bufLen - 1; i++)
-			buf[i] = static_cast<wchar_t>(text[i]);
-
-		buf[i] = L'\0';
-	}
-
-	long long FloorDiv(long long a, long long b)
-	{
-		return a >= 0 ? a / b : -((-a + b - 1) / b);
-	}
-
-	long long CeilDiv(long long a, long long b)
-	{
-		return a >= 0 ? (a + b - 1) / b : -(-a / b);
+		int quotient = ms / unit;
+		int remainder = ms % unit;
+		return bDown ? quotient + (remainder > 0) : quotient - (remainder < 0);
 	}
 
 	/**
@@ -312,7 +190,9 @@ namespace
 			while (pos < len && !m_bTruncated)
 			{
 				size_t size = GetCodePointSize(text + pos, len - pos);
-				int units = GetUtf16Units(text + pos, size);
+
+				// A code point above U+FFFF takes two UTF-16 units, also where wchar_t is UTF-32
+				int units = static_cast<unsigned int>(text[pos]) > 0xFFFF ? 2 : static_cast<int>(size);
 
 				if (m_iLen + static_cast<int>(size) > m_iBufLen - 1 || m_iUnits + units > MAX_EVAL_LEN)
 				{
@@ -330,9 +210,9 @@ namespace
 			m_pBuf[m_iLen] = L'\0';
 		}
 
-		void Append(const std::wstring &text)
+		void Append(const wchar_t *text)
 		{
-			Append(text.data(), text.size());
+			Append(text, wcslen(text));
 		}
 
 		void Append(wchar_t c)
@@ -340,23 +220,14 @@ namespace
 			Append(&c, 1);
 		}
 
-		void AppendAscii(const char *text)
-		{
-			for (; *text; text++)
-				Append(static_cast<wchar_t>(*text));
-		}
-
 		void AppendNumber(int n)
 		{
-			char buf[16];
-			snprintf(buf, sizeof(buf), "%d", n);
-			AppendAscii(buf);
+			wchar_t buf[16];
+			swprintf(buf, std::size(buf), L"%d", n);
+			Append(buf);
 		}
 
-		bool IsTruncated() const
-		{
-			return m_bTruncated;
-		}
+		bool IsTruncated() const { return m_bTruncated; }
 
 	private:
 		wchar_t *m_pBuf = nullptr;
@@ -387,132 +258,70 @@ namespace
 		}
 	}
 
-	//! Writes a value without a text format (8.10, "Values are written as")
-	void WritePlainValue(const TemplateValue &value, CTextWriter &out)
+	//! Writes milliseconds as m:ss.cc, from one hour as h:mm:ss.cc, below 0 as 0:00.00 (format time2)
+	void FormatTime2(int ms, bool bDown, wchar_t *buf, int bufLen)
 	{
-		switch (value.type)
-		{
-		case E_TemplateValueType::Int:
-			out.AppendNumber(value.iValue);
-			break;
-		case E_TemplateValueType::Text:
-			out.Append(value.wszText, GetWideLength(value.wszText, TEMPLATE_BUF_LEN));
-			break;
-		case E_TemplateValueType::Progress:
-			out.AppendNumber(value.iValue);
+		int hundredths = std::max(DivideClock(ms, 10, bDown), 0);
+		wchar_t text[16];
+		FormatTime(hundredths / 100, text, static_cast<int>(std::size(text)));
+		swprintf(buf, bufLen, L"%ls.%02d", text, hundredths % 100);
+	}
 
-			if (value.iMax != 0)
-			{
-				out.Append(L'/');
-				out.AppendNumber(value.iMax);
-			}
+	//! Index of the word form (10.2) for the absolute value of n, with formCount forms (1-3)
+	int GetWordForm(int n, int formCount)
+	{
+		unsigned int value = n < 0 ? 0u - static_cast<unsigned int>(n) : static_cast<unsigned int>(n);
 
-			break;
-		case E_TemplateValueType::Clock:
-		{
-			wchar_t buf[TEMPLATE_BUF_LEN];
-			FormatTime(GetClockSeconds(value.iValue, value.bClockDown), buf, TEMPLATE_BUF_LEN);
-			out.Append(buf, GetWideLength(buf, TEMPLATE_BUF_LEN));
-			break;
-		}
-		default:
-			break;
-		}
+		if (formCount <= 1)
+			return 0;
+
+		if (formCount == 2)
+			return value == 1 ? 0 : 1;
+
+		if (value % 10 == 1 && value % 100 != 11)
+			return 0;
+
+		if (value % 10 >= 2 && value % 10 <= 4 && (value % 100 < 12 || value % 100 > 14))
+			return 1;
+
+		return 2;
 	}
 
 }
 
 //----------------------------------------------------------------------------------------------------
-// Refs and values
+// Refs
 //----------------------------------------------------------------------------------------------------
-bool ParseRef(const char *text, TemplateRef &out)
+void ParseRef(const char *text, TemplateRef &out)
 {
 	out = TemplateRef();
 
 	if (!text || !text[0])
-		return false;
+		return;
 
 	if (!IsValidRef(text))
 	{
 		out.builtin = E_Builtin::Unknown;
-		return false;
+		return;
 	}
 
-	const char *name = text;
-
-	if (*name == '^')
-	{
-		out.bFirstRow = true;
-		name++;
-	}
-
-	const char *format = strchr(name, ':');
-	size_t nameLen = format ? static_cast<size_t>(format - name) : strlen(name);
-	bool bBuiltin = name[0] == '@';
-
-	if (bBuiltin)
-	{
-		name++;
-		nameLen--;
-	}
-
-	memcpy(out.szKey, name, nameLen);
-	out.szKey[nameLen] = '\0';
-
-	if (bBuiltin)
-		out.builtin = FindBuiltin(out.szKey);
-
-	if (format)
-	{
-		format++;
-
-		if (!strcmp(format, "cur"))
-			out.format = E_RefFormat::Cur;
-		else if (!strcmp(format, "max"))
-			out.format = E_RefFormat::Max;
-		else
-			out.format = E_RefFormat::Left;
-	}
-
-	return true;
-}
-
-bool TemplateValue::GetNumber(int &out) const
-{
-	switch (type)
-	{
-	case E_TemplateValueType::Int:
-	case E_TemplateValueType::Progress:
-		out = iValue;
-		return true;
-	case E_TemplateValueType::Clock:
-		out = GetClockSeconds(iValue, bClockDown);
-		return true;
-	default:
-		return false;
-	}
+	// A valid ref is a placeholder without its braces, '?', word forms and other formats
+	std::wstring source = L"{" + std::wstring(text, text + strlen(text)) + L"}";
+	CTemplate tpl;
+	tpl.Parse(source.c_str());
+	out = tpl.GetPlaceholderRef(0);
 }
 
 //----------------------------------------------------------------------------------------------------
 // CTemplate
 //----------------------------------------------------------------------------------------------------
-bool CTemplate::Parse(const char *text, ITemplateLocalizer *pLocalizer)
+bool CTemplate::Parse(const char *text)
 {
 	if (!text)
 		text = "";
 
-	if (IsClientToken(text))
-	{
-		const wchar_t *localized = pLocalizer ? pLocalizer->Find(text) : nullptr;
-
-		if (localized)
-			return Parse(localized);
-
-		// A missing token is shown as its name (8.10)
-		return Parse(Utf8ToWide(text + 1).c_str());
-	}
-
-	return Parse(Utf8ToWide(text).c_str());
+	// A missing token is shown as its name (8.10)
+	return Parse(Utf8ToWide(IsClientToken(text) ? text + 1 : text).c_str());
 }
 
 bool CTemplate::Parse(const wchar_t *text)
@@ -520,15 +329,12 @@ bool CTemplate::Parse(const wchar_t *text)
 	Clear();
 	m_bSet = true;
 
-	if (text)
-		m_Source.assign(text, GetWideLength(text, static_cast<size_t>(-1)));
-
-	const std::wstring &src = m_Source;
+	std::wstring src = text ? text : L"";
 	size_t len = src.size();
 	size_t pos = 0;
 	std::wstring literal;
 
-	while (pos < len)
+	while (pos < len && !HasError())
 	{
 		wchar_t c = src[pos];
 
@@ -539,27 +345,17 @@ bool CTemplate::Parse(const wchar_t *text)
 		}
 		else if (c == L'{')
 		{
-			size_t end = pos + 1;
+			size_t end = src.find(L'}', pos + 1);
 
-			while (end < len && src[end] != L'}')
-				end++;
-
-			if (end == len)
+			if (end == std::wstring::npos)
 			{
 				// After a '{' without a closing '}' the rest is literal
 				AppendWithoutColors(literal, src, pos, len);
 				break;
 			}
 
-			if (ParsePlaceholder(src, pos, end))
+			if (ParsePlaceholder(src, pos, end, literal))
 			{
-				if (!m_Error.empty())
-					break;
-
-				Segment segment;
-				segment.literal.swap(literal);
-				segment.iPlaceholder = static_cast<int>(m_Placeholders.size()) - 1;
-				m_Segments.push_back(segment);
 				pos = end + 1;
 			}
 			else
@@ -579,20 +375,11 @@ bool CTemplate::Parse(const wchar_t *text)
 		}
 	}
 
-	if (!m_Error.empty())
-	{
-		m_Segments.clear();
-		m_Placeholders.clear();
-		return false;
-	}
-
-	Segment segment;
-	segment.literal.swap(literal);
-	m_Segments.push_back(segment);
-	return true;
+	m_Tail.swap(literal);
+	return !HasError();
 }
 
-bool CTemplate::ParsePlaceholder(const std::wstring &text, size_t begin, size_t end)
+bool CTemplate::ParsePlaceholder(const std::wstring &text, size_t begin, size_t end, std::wstring &literal)
 {
 	Placeholder ph;
 	size_t pos = begin + 1;
@@ -644,9 +431,7 @@ bool CTemplate::ParsePlaceholder(const std::wstring &text, size_t begin, size_t 
 	while (pos < end && text[pos] == L'|')
 	{
 		size_t formBegin = ++pos;
-
-		while (pos < end && text[pos] != L'|' && text[pos] != L'{')
-			pos++;
+		pos = std::min(text.find_first_of(L"|{", pos), end);
 
 		if (pos < end && text[pos] == L'{')
 			return false;
@@ -664,39 +449,34 @@ bool CTemplate::ParsePlaceholder(const std::wstring &text, size_t begin, size_t 
 	for (size_t i = 0; i < nameLen; i++)
 		ph.ref.szKey[i] = static_cast<char>(text[nameBegin + i]);
 
-	ph.ref.szKey[nameLen] = '\0';
 	ph.ref.builtin = bBuiltin ? FindBuiltin(ph.ref.szKey) : E_Builtin::None;
-	ph.source.assign(text, begin, end - begin + 1);
 
-	auto fnError = [&](const char *reason) {
-		m_Error = WideToUtf8(ph.source) + ": " + reason;
+	auto fnError = [this]() {
+		m_bError = true;
 		return true;
 	};
 
 	if (m_Placeholders.size() >= static_cast<size_t>(MAX_PLACEHOLDERS))
-		return fnError("more than 16 placeholders");
+		return fnError();
 
 	for (size_t i = 0; i < formats.size(); i++)
 	{
 		const std::string &format = formats[i];
 
-		for (size_t j = 0; j < i; j++)
-		{
-			if (formats[j] == format)
-				return fnError("repeated format");
-		}
+		if (std::find(formats.begin(), formats.begin() + i, format) != formats.begin() + i)
+			return fnError();
 
 		if (format == "cur" || format == "max" || format == "left")
 		{
 			if (ph.ref.format != E_RefFormat::None)
-				return fnError("more than one of cur, max and left");
+				return fnError();
 
 			ph.ref.format = format == "cur" ? E_RefFormat::Cur : (format == "max" ? E_RefFormat::Max : E_RefFormat::Left);
 		}
 		else if (format == "time" || format == "time2" || format == "name" || format == "team")
 		{
 			if (ph.textFormat != E_TextFormat::None)
-				return fnError("more than one of time, time2, name, team and word forms");
+				return fnError();
 
 			if (format == "time")
 				ph.textFormat = E_TextFormat::Time;
@@ -710,23 +490,14 @@ bool CTemplate::ParsePlaceholder(const std::wstring &text, size_t begin, size_t 
 		else if (format.find_first_not_of("0123456789") == std::string::npos)
 		{
 			if (ph.iCut != 0)
-				return fnError("more than one cut");
+				return fnError();
 
-			int cut = 0;
-
-			for (char digit : format)
-			{
-				cut = cut * 10 + (digit - '0');
-
-				// Any longer number is out of range too
-				if (cut > MAX_CUT)
-					break;
-			}
+			long cut = strtol(format.c_str(), nullptr, 10);
 
 			if (cut < 1 || cut > MAX_CUT)
-				return fnError("cut out of the range 1-255");
+				return fnError();
 
-			ph.iCut = cut;
+			ph.iCut = static_cast<int>(cut);
 		}
 		else
 		{
@@ -737,38 +508,22 @@ bool CTemplate::ParsePlaceholder(const std::wstring &text, size_t begin, size_t 
 	if (formCount > 0)
 	{
 		if (ph.textFormat != E_TextFormat::None)
-			return fnError("more than one of time, time2, name, team and word forms");
+			return fnError();
 
 		ph.textFormat = E_TextFormat::Forms;
 		ph.iFormCount = formCount < MAX_FORMS ? formCount : MAX_FORMS;
 	}
 
+	ph.literal.swap(literal);
 	m_Placeholders.push_back(ph);
 	return true;
-}
-
-void CTemplate::Clear()
-{
-	m_bSet = false;
-	m_Source.clear();
-	m_Error.clear();
-	m_Segments.clear();
-	m_Placeholders.clear();
-}
-
-const wchar_t *CTemplate::GetPlaceholderSource(int i) const
-{
-	if (i < 0 || i >= GetPlaceholderCount())
-		return L"";
-
-	return m_Placeholders[i].source.c_str();
 }
 
 const TemplateRef &CTemplate::GetPlaceholderRef(int i) const
 {
 	static const TemplateRef s_EmptyRef;
 
-	if (i < 0 || i >= GetPlaceholderCount())
+	if (i < 0 || i >= static_cast<int>(m_Placeholders.size()))
 		return s_EmptyRef;
 
 	return m_Placeholders[i].ref;
@@ -778,145 +533,85 @@ bool CTemplate::WriteValue(const Placeholder &ph, ITemplateContext &ctx, wchar_t
 {
 	CTextWriter out(buf, bufLen);
 	TemplateValue value;
-	bTruncated = false;
-
-	if (ph.bUnknownFormat || ph.ref.builtin == E_Builtin::Unknown || !ctx.GetValue(ph.ref, value))
-		return false;
-
-	if (value.type == E_TemplateValueType::Missing)
-		return false;
-
-	int number = 0;
-	bool bIsNumber = value.GetNumber(number);
 	wchar_t text[TEMPLATE_BUF_LEN];
 	text[0] = L'\0';
+	bTruncated = false;
+
+	// Every text format takes a number
+	if (ph.bUnknownFormat || ph.ref.builtin == E_Builtin::Unknown || !ctx.GetValue(ph.ref, value) || (ph.textFormat != E_TextFormat::None && !value.bIsNumber))
+		return false;
 
 	switch (ph.textFormat)
 	{
 	case E_TextFormat::None:
-		WritePlainValue(value, out);
+		out.Append(value.wszText);
 		break;
 	case E_TextFormat::Forms:
-		if (!bIsNumber)
-			return false;
-
-		WriteForm(ph.forms[GetWordForm(number, ph.iFormCount)], number, out);
+		WriteForm(ph.forms[GetWordForm(value.iNumber, ph.iFormCount)], value.iNumber, out);
 		break;
 	case E_TextFormat::Time:
-		if (!bIsNumber)
-			return false;
-
-		FormatTime(number, text, TEMPLATE_BUF_LEN);
-		out.Append(text, GetWideLength(text, TEMPLATE_BUF_LEN));
+		FormatTime(value.iNumber, text, TEMPLATE_BUF_LEN);
 		break;
 	case E_TextFormat::Time2:
-		if (value.type == E_TemplateValueType::Int || value.type == E_TemplateValueType::Progress)
-			FormatTime2(value.iValue, false, text, TEMPLATE_BUF_LEN);
-		else if (value.type == E_TemplateValueType::Clock)
-			FormatTime2(value.iValue, value.bClockDown, text, TEMPLATE_BUF_LEN);
-		else
-			return false;
-
-		out.Append(text, GetWideLength(text, TEMPLATE_BUF_LEN));
+		FormatTime2(value.iMs, value.bClockDown, text, TEMPLATE_BUF_LEN);
 		break;
 	case E_TextFormat::Name:
-		if (!bIsNumber || !ctx.GetPlayerName(number, text, TEMPLATE_BUF_LEN))
+		if (!ctx.GetPlayerName(value.iNumber, text, TEMPLATE_BUF_LEN))
 			return false;
 
-		out.Append(text, GetWideLength(text, TEMPLATE_BUF_LEN));
 		break;
 	case E_TextFormat::Team:
-		if (!bIsNumber || !ctx.GetTeamName(number, text, TEMPLATE_BUF_LEN))
+		if (!ctx.GetTeamName(value.iNumber, text, TEMPLATE_BUF_LEN))
 			return false;
 
-		out.Append(text, GetWideLength(text, TEMPLATE_BUF_LEN));
 		break;
 	}
 
+	out.Append(text);
 	bTruncated = out.IsTruncated();
 	return true;
 }
 
-bool CTemplate::Evaluate(ITemplateContext &ctx, wchar_t *buf, int bufLen, unsigned int *pMissing) const
+bool CTemplate::Evaluate(ITemplateContext &ctx, wchar_t *buf, int bufLen) const
 {
-	if (pMissing)
-		*pMissing = 0;
-
 	if (!buf || bufLen <= 0)
 		return false;
 
-	buf[0] = L'\0';
+	CTextWriter out(buf, bufLen);
 
 	if (!m_bSet || HasError())
 		return false;
 
-	CTextWriter out(buf, bufLen);
-	bool bMissing = false;
-
-	for (const Segment &segment : m_Segments)
+	for (const Placeholder &ph : m_Placeholders)
 	{
-		out.Append(segment.literal);
-
-		if (segment.iPlaceholder < 0)
-			continue;
-
-		const Placeholder &ph = m_Placeholders[segment.iPlaceholder];
 		wchar_t text[TEMPLATE_BUF_LEN];
 		bool bTruncated = false;
+		out.Append(ph.literal.data(), ph.literal.size());
 
 		if (!WriteValue(ph, ctx, text, TEMPLATE_BUF_LEN, bTruncated))
 		{
-			if (pMissing)
-				*pMissing |= 1u << segment.iPlaceholder;
+			if (ph.bOptional)
+				continue;
 
-			if (!ph.bOptional)
-			{
-				bMissing = true;
-
-				if (!pMissing)
-					break;
-			}
-
-			continue;
+			buf[0] = L'\0';
+			return false;
 		}
 
-		size_t len = GetWideLength(text, TEMPLATE_BUF_LEN);
+		size_t len = wcslen(text);
+		size_t size = ph.iCut > 0 ? GetCodePointsSize(text, len, ph.iCut) : len;
 
 		// Only the TABs of the template separate the columns of a Board row (8.14)
-		for (size_t i = 0; i < len; i++)
-		{
-			if (text[i] == L'\t')
-				text[i] = L' ';
-		}
+		std::replace(text, text + size, L'\t', L' ');
+		out.Append(text, size);
 
-		if (ph.iCut > 0)
-		{
-			size_t size = GetCodePointsSize(text, len, ph.iCut);
-			bool bCut = bTruncated || size < len;
-			out.Append(text, size);
-
-			if (bCut)
-				out.Append(ELLIPSIS);
-		}
-		else
-		{
-			out.Append(text, len);
-		}
+		if (ph.iCut > 0 && (bTruncated || size < len))
+			out.Append(ELLIPSIS);
 	}
 
-	if (bMissing)
-	{
-		buf[0] = L'\0';
-		return false;
-	}
+	out.Append(m_Tail.data(), m_Tail.size());
 
 	// Line breaks are drawn as spaces (8.6)
-	for (wchar_t *c = buf; *c; c++)
-	{
-		if (*c == L'\r' || *c == L'\n')
-			*c = L' ';
-	}
-
+	std::replace_if(buf, buf + wcslen(buf), [](wchar_t c) { return c == L'\r' || c == L'\n'; }, L' ');
 	return buf[0] != L'\0';
 }
 
@@ -925,83 +620,25 @@ bool CTemplate::Evaluate(ITemplateContext &ctx, wchar_t *buf, int bufLen, unsign
 //----------------------------------------------------------------------------------------------------
 bool IsClientToken(const char *str)
 {
-	if (!str || str[0] != '#')
+	if (!str || str[0] != '#' || !str[1] || IsAsciiDigit(str[1]))
 		return false;
 
-	unsigned char first = static_cast<unsigned char>(str[1]);
-
-	if (!IsAsciiAlpha(first) && first != '_')
-		return false;
-
-	for (const char *c = str + 2; *c; c++)
-	{
-		unsigned char ch = static_cast<unsigned char>(*c);
-
-		if (!IsAsciiAlpha(ch) && !IsAsciiDigit(ch) && ch != '_')
-			return false;
-	}
-
-	return true;
+	return strspn(str + 1, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_") == strlen(str + 1);
 }
 
 int GetClockSeconds(int ms, bool bDown)
 {
-	return static_cast<int>(bDown ? CeilDiv(ms, 1000) : FloorDiv(ms, 1000));
+	return DivideClock(ms, 1000, bDown);
 }
 
 void FormatTime(int seconds, wchar_t *buf, int bufLen)
 {
-	if (seconds < 0)
-		seconds = 0;
+	seconds = std::max(seconds, 0);
 
-	char text[32];
-	int hours = seconds / 3600;
-
-	if (hours > 0)
-		snprintf(text, sizeof(text), "%d:%02d:%02d", hours, seconds / 60 % 60, seconds % 60);
+	if (seconds >= 3600)
+		swprintf(buf, bufLen, L"%d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60);
 	else
-		snprintf(text, sizeof(text), "%d:%02d", seconds / 60, seconds % 60);
-
-	AsciiToWide(text, buf, bufLen);
-}
-
-void FormatTime2(int ms, bool bDown, wchar_t *buf, int bufLen)
-{
-	long long hundredths = bDown ? CeilDiv(ms, 10) : FloorDiv(ms, 10);
-
-	if (hundredths < 0)
-		hundredths = 0;
-
-	long long seconds = hundredths / 100;
-	int cc = static_cast<int>(hundredths % 100);
-	int hours = static_cast<int>(seconds / 3600);
-	char text[48];
-
-	if (hours > 0)
-		snprintf(text, sizeof(text), "%d:%02d:%02d.%02d", hours, static_cast<int>(seconds / 60 % 60), static_cast<int>(seconds % 60), cc);
-	else
-		snprintf(text, sizeof(text), "%d:%02d.%02d", static_cast<int>(seconds / 60), static_cast<int>(seconds % 60), cc);
-
-	AsciiToWide(text, buf, bufLen);
-}
-
-int GetWordForm(int n, int formCount)
-{
-	unsigned int value = n < 0 ? 0u - static_cast<unsigned int>(n) : static_cast<unsigned int>(n);
-
-	if (formCount <= 1)
-		return 0;
-
-	if (formCount == 2)
-		return value == 1 ? 0 : 1;
-
-	if (value % 10 == 1 && value % 100 != 11)
-		return 0;
-
-	if (value % 10 >= 2 && value % 10 <= 4 && (value % 100 < 12 || value % 100 > 14))
-		return 1;
-
-	return 2;
+		swprintf(buf, bufLen, L"%d:%02d", seconds / 60, seconds % 60);
 }
 
 }
