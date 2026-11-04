@@ -82,6 +82,7 @@ private:
 		int value = 0; //!< Int value, Progress cur or Clock ms
 		int max = 0; //!< Progress max
 		unsigned int flags = 0; //!< Clock flags
+		float time = 0; //!< Server time when a running Clock was set
 		char text[bhl::sb::MAX_TEXT_LEN + 1] = {}; //!< Text value or Icon text
 		char sprite[bhl::sb::MAX_TEXT_LEN + 1] = {};
 	};

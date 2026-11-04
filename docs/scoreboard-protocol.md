@@ -747,7 +747,10 @@ A client gets at most about 512 bytes per 0.1 s, so the rate stays about 5 KB/s 
 fps. When they are used up, nothing more is sent to it until the 0.1 s is over. Small updates go
 out in the frame they happen while the budget lasts. Several changes of one cell, element,
 template or visibility in one frame produce one message. A setter that writes the value already
-stored marks nothing, but a write for player 0 still drops the overrides (5.4).
+stored marks nothing, but a write for player 0 still drops the overrides (5.4). A running `Clock`
+runs from the call, so setting it again restarts it even with the same values. It is sent with the
+time it has run since then, a countdown stopping at 0, so a client that gets it later, after the
+budget or in a full sync, shows the same time.
 
 A new element gets the lowest free id that no client still has anything of (the old element, its
 visibility bit, a child placed at it); only when every free id is held is the lowest free id
@@ -1980,7 +1983,8 @@ Scoreboard:
   column `host`, which may be added later. Its cells are set with the usual `bhl_sb_set_*`
   natives.
 - `bhl_sb_set_clock()` sets a `Clock` (4.3): `ms` is its value now. `BHL_SB_CLOCK_RUN` runs it,
-  `BHL_SB_CLOCK_DOWN` makes it count down to 0.
+  `BHL_SB_CLOCK_DOWN` makes it count down to 0. A new call restarts a running clock, even with the
+  same values (5.2).
 - `bhl_sb_list_resize()` creates the list on first use. Setting an item out of range is ignored.
 - `sprite` of `bhl_sb_set_icon()` and `bhl_sb_list_set_icon()` is a `hud.txt` name or the path of
   a sprite file, `sprites/<name>.spr` (4.3). The plugin precaches a file with `precache_generic`
@@ -2038,7 +2042,7 @@ HUD:
 - `bhl_hud_hide_std()` sets or clears only the given standard parts, for everyone, so plugins that
   hide different parts don't undo each other. `bhl_sb_reset()` clears all.
 - Setting a cell, an item, a text, a visibility or the hidden parts to the value it already has
-  sends nothing.
+  sends nothing; a running clock is restarted instead (5.2).
 - `bhl_client_caps_changed` doesn't fire for the caps a player had when he joined, because they
   are known before he is in game. Plugins check `bhl_get_client_caps()` when they need it.
 

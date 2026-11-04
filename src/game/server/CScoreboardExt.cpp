@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <climits>
 #include "extdll.h"
 #include "util.h"
 #include "cbase.h"
@@ -322,7 +323,10 @@ void CScoreboardExt::ListSetIcon(const char *key, int index, const char *sprite,
 
 void CScoreboardExt::SetClock(int target, const char *key, int ms, unsigned int flags)
 {
-	SetCell(target, key, { bhl::sb::E_ValueType::Clock, ms, 0, flags & (unsigned int)bhl::sb::E_ClockFlags::All });
+	flags &= (unsigned int)bhl::sb::E_ClockFlags::All;
+
+	// A running clock runs from this call, so a call with the same values restarts it
+	SetCell(target, key, { bhl::sb::E_ValueType::Clock, ms, 0, flags, (flags & (unsigned int)bhl::sb::E_ClockFlags::Run) ? gpGlobals->time : 0.0f });
 }
 
 bool CScoreboardExt::AddBadge(const char *key, const char *host)
@@ -1310,7 +1314,7 @@ CScoreboardExt::value_t CScoreboardExt::MakeValue(bhl::sb::E_ValueType type, con
 
 bool CScoreboardExt::IsEqual(const value_t &a, const value_t &b)
 {
-	return a.type == b.type && a.value == b.value && a.max == b.max && a.flags == b.flags && !strcmp(a.text, b.text) && !strcmp(a.sprite, b.sprite);
+	return a.type == b.type && a.value == b.value && a.max == b.max && a.flags == b.flags && a.time == b.time && !strcmp(a.text, b.text) && !strcmp(a.sprite, b.sprite);
 }
 
 bool CScoreboardExt::IsEqual(const column_t &a, const column_t &b)
@@ -1407,8 +1411,19 @@ void CScoreboardExt::WriteValue(const value_t &value)
 		}
 		break;
 	case bhl::sb::E_ValueType::Clock:
-		WRITE_LONG(value.value);
+	{
+		// The client runs a clock from its arrival, so a running one goes with the time it has run since it was set
+		int64_t ms = value.value;
+
+		if (value.flags & (unsigned int)bhl::sb::E_ClockFlags::Run)
+		{
+			int64_t elapsed = (int64_t)(std::max(gpGlobals->time - value.time, 0.0f) * 1000.0 + 0.5);
+			ms = (value.flags & (unsigned int)bhl::sb::E_ClockFlags::Down) ? std::max<int64_t>(ms - elapsed, 0) : std::min<int64_t>(ms + elapsed, INT_MAX);
+		}
+
+		WRITE_LONG((int)ms);
 		WRITE_BYTE(value.flags);
 		break;
+	}
 	}
 }

@@ -68,7 +68,7 @@ public:
 	virtual void ListSetText(const char *key, int index, const char *text) = 0;
 	virtual void ListSetIcon(const char *key, int index, const char *sprite, const char *text) = 0;
 
-	//! Sets a Clock cell (4.3). flags: bhl::sb::E_ClockFlags
+	//! Sets a Clock cell (4.3). flags: bhl::sb::E_ClockFlags. A running clock runs from the call, so a call with the same values restarts it (5.2).
 	virtual void SetClock(int target, const char *key, int ms, unsigned int flags) = 0;
 
 	/**
